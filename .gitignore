@@ -1,0 +1,32 @@
+# 忽略所有 .log 文件
+*.log
+
+# 忽略 node_modules 目录
+node_modules/
+
+# 忽略 dist 目录
+dist/
+
+# 忽略 .env 文件
+.env
+
+# 忽略所有 .idea 目录（不限制层级）
+**/.idea/
+
+# 忽略指定文件
+config/local.json
+
+# 不忽略某个文件（例外）
+!important.log
+
+/classifier_data/
+
+/classifier_ckpt/
+
+/examples/demo_data/
+
+/examples/experiments/ram_insertion/first_run/
+
+*.pyc
+
+.history/

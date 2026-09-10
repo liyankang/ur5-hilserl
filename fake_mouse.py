@@ -23,10 +23,6 @@ MAX_SPEED = 0.01         # 最大速度 (符合UR限制)
 MAX_ACCEL = 0.01          # 最大加速度
 CONTROL_LOOP_INTERVAL = 0.01  # 100Hz控制环
 
-# 起始目标位姿 (xyz + rotvec, UR 基座系)：与
-# examples/experiments/ram_insertion/config.py 中的 TARGET_POSE 保持一致
-TARGET_POSE = np.array([0.0849, -0.6295, -0.2698, 2.8370, 1.1641, 0.1422])
-
 
 def format_values(values, precision=4):
     return ", ".join(f"{float(v):.{precision}f}" for v in values)
@@ -144,10 +140,9 @@ def main():
         print("-"*80)
 
         mouse = FakeSpaceMouseExpert()
-        # 初始化位置为 TARGET_POSE：机器人先伺服到目标点，之后可用键盘在其基础上人工干预
-        target_pose = TARGET_POSE.copy()
-        print(f"起始目标: TARGET_POSE = {[round(x, 4) for x in TARGET_POSE]}")
-        print(f"当前 TCP 与目标偏差: {[round(a - b, 4) for a, b in zip(current_pose, TARGET_POSE)]}")
+        # 起始目标 = 机械臂当前位置：启动时不移动，直接可在当前位置人工干预
+        target_pose = np.asarray(rtde_r.getActualTCPPose(), dtype=np.float64)
+        print(f"起始目标(当前 TCP 位姿) = {[round(x, 4) for x in target_pose]}")
 
         while mouse.running:
             action, buttons = mouse.get_action()

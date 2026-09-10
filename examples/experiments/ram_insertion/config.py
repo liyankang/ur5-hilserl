@@ -76,8 +76,8 @@ class EnvConfig(DefaultEnvConfig):
 
     }
     # Pose convention in this config: xyz + rotvec (UR RTDE native orientation).
-    TARGET_POSE = np.array([0.0849, -0.6295, -0.2698, 2.8370, 1.1641, 0.1422])
-    GRASP_POSE = np.array([0.0849, -0.6295, -0.2698, 2.8370, 1.1641, 0.1422])
+    TARGET_POSE = np.array([0.0879, -0.6300, -0.2381, 2.7588, 1.2847, 0.0436])
+    GRASP_POSE = np.array([0.0879, -0.6300, -0.2381, 2.7588, 1.2847, 0.0436])
     # Sparse task reward: reward=1 when TCP pose (xyz + rotvec) reaches TARGET_POSE within tolerance.
     REWARD_THRESHOLD = np.array([0.005, 0.005, 0.005, 0.02, 0.02, 0.02], dtype=np.float64)
     RESET_POSE = TARGET_POSE + np.array([0, 0, 0.1, 0, 0, 0])

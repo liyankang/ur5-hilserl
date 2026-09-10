@@ -124,6 +124,7 @@ class ForceModeTester:
         self.force_max = np.zeros(6)
         self.pos_initialized = False
         self.closed = False
+        self._enable_report = 0
 
         # 初始化：阻尼/增益、皮重、负载
         self._try("forceModeSetDamping", args.damping)
@@ -137,11 +138,14 @@ class ForceModeTester:
 
         self._read_state()
         self.target = self.pos.copy()
+        connected = getattr(self.rtde_c, "isConnected", lambda: True)()
         print(
-            f"已连接 {args.robot_ip} | 控制 {args.hz:.0f}Hz | "
-            f"限幅缩放 {args.clip_scale:.2f}x（等效最大力 ≈ "
+            f"已连接 {args.robot_ip} | RTDE控制口 connected={connected} | "
+            f"控制 {args.hz:.0f}Hz | 限幅缩放 {args.clip_scale:.2f}x（等效最大力 ≈ "
             f"{self.kp * self.clip_pos.max():.1f} N）"
         )
+        if not connected:
+            print("警告: RTDE 控制口未连接，检查网线/IP/是否被其它程序占用")
 
         self.listener = keyboard.Listener(
             on_press=self._on_press, on_release=self._on_release
@@ -199,8 +203,12 @@ class ForceModeTester:
                     self.enabled = False
                     print(f"\n=== 切换到模式 {self.mode}（力控已关闭，按 f 启用）===")
                 elif ch == "f":
-                    self.enabled = True
-                    print("\n=== 力控已启用 ===")
+                    if self.mode == 1:
+                        print("\n模式 1 只读监测，不发任何力控指令；请先按 2 或 3")
+                    else:
+                        self.enabled = True
+                        self._enable_report = 3
+                        print("\n=== 力控已启用 ===")
                 elif ch == " ":
                     self.enabled = False
                     print("\n=== 力控已停止 ===")
@@ -323,7 +331,8 @@ class ForceModeTester:
                 if self.mode == 3:
                     # 允许在力控关闭时先摆好目标点，再按 f 启用
                     self._apply_jog()
-                if not self.enabled:
+                if self.mode == 1 or not self.enabled:
+                    # 模式 1 只读监测，任何情况下都不下发 forceMode
                     self._stop_force_mode()
                 else:
                     selection, wrench = self._build_command()
@@ -344,11 +353,26 @@ class ForceModeTester:
                         except Exception as exc:
                             print(f"\n!! forceMode 调用异常: {exc}")
                             ok = False
+                        if ok is None:
+                            # 部分 ur_rtde 版本的 forceMode() 不返回布尔值
+                            ok = True
+                        if self._enable_report > 0:
+                            self._enable_report -= 1
+                            print(
+                                f"\nforceMode 返回 {ok!r}（True=控制器已接受；"
+                                f"False/异常=被拒绝，检查远程模式与 RTDE 控制口占用）"
+                            )
                         self.force_active = bool(ok)
                         self.force_req = wrench
                         self.fail_count = 0 if ok else self.fail_count + 1
                         if self.fail_count == 20:
-                            print("\n!! forceMode 连续失败，已关闭力控（检查限幅/模式参数）")
+                            print(
+                                "\n!! forceMode 连续返回失败，已关闭力控。请依次确认：\n"
+                                "   1) 示教器处于 Remote Control（远程控制）模式\n"
+                                "   2) 机器人无保护停止/无错误、已使能\n"
+                                "   3) 没有别的程序或 RTDE 控制连接同时在下发运动指令\n"
+                                "   4) 示教器上未处于 Freedrive / 正在运行的程序"
+                            )
                             self.enabled = False
                             self._stop_force_mode()
 

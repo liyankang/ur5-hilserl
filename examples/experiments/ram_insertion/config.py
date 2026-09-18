@@ -5,14 +5,12 @@ import jax.numpy as jnp
 import numpy as np
 
 from ur_env.envs.wrappers import (
-    Quat2MrpWrapper,
-    MrpToRotvecActionWrapper,
+    Quat2EulerWrapper,
     KeyboardIntervention,
     MultiCameraBinaryRewardClassifierWrapper,
     GripperCloseEnv,
     ActionInterpolationWrapper
 )
-from ur_env.envs.relative_env import RelativeFrame
 from ur_env.envs.ur_env import DefaultEnvConfig
 from serl_launcher.wrappers.serl_obs_wrappers import SERLObsWrapper
 from serl_launcher.wrappers.chunking import ChunkingWrapper
@@ -75,20 +73,27 @@ class EnvConfig(DefaultEnvConfig):
         "global_2": lambda img: img[425:653, 421:555],
 
     }
-    # Pose convention in this config: xyz + rotvec (UR RTDE native orientation).
+    # Target and reset poses remain xyz + rotvec for the robot API.
     TARGET_POSE = np.array([0.0879, -0.6300, -0.2381, 2.7588, 1.2847, 0.0436])
-    GRASP_POSE = np.array([0.0879, -0.6300, -0.2381, 2.7588, 1.2847, 0.0436])
-    # Sparse task reward: reward=1 when TCP pose (xyz + rotvec) reaches TARGET_POSE within tolerance.
+    GRASP_POSE = TARGET_POSE.copy()
     REWARD_THRESHOLD = np.array([0.005, 0.005, 0.005, 0.02, 0.02, 0.02], dtype=np.float64)
     RESET_POSE = TARGET_POSE + np.array([0, 0, 0.1, 0, 0, 0])
-    # Keep translation bounds tight, no rotation allowed.
     ABS_POSE_LIMIT_LOW = TARGET_POSE - np.array([0.05, 0.05, 0.02, 0, 0, 0])
     ABS_POSE_LIMIT_HIGH = TARGET_POSE + np.array([0.05, 0.05, 0.15, 0, 0, 0])
+    # Policy uses absolute base-frame xyz + xyz Euler angles.
+    STATE_FIELD_SHAPES = {
+        "tcp_pose": (6,),
+        "tcp_vel": (6,),
+        "tcp_force": (3,),
+        "tcp_torque": (3,),
+        "gripper_pose": (1,),
+    }
     RANDOM_RESET = True
     RANDOM_XY_RANGE = 0.02
     RANDOM_RZ_RANGE = 0.02
     ACTION_SCALE = (0.003, 0.001, 1)
-    ACTION_ROTATION_REPR = "rotvec"
+    ACTION_ROTATION_REPR = "euler"
+    # TARGET_POSE/RESET_POSE use the robot API's xyz + rotvec convention.
     POSE_ROTATION_REPR = "rotvec"
     DISPLAY_IMAGE = True
     GRIPPER_SLEEP = 0.0
@@ -176,9 +181,7 @@ class TrainConfig(DefaultTrainingConfig):
         env = GripperCloseEnv(env)
         if not fake_env:
             env = KeyboardIntervention(env)
-        env = RelativeFrame(env)
-        env = MrpToRotvecActionWrapper(env, rotation_action_scale=EnvConfig.ACTION_SCALE[1])
-        env = Quat2MrpWrapper(env)
+        env = Quat2EulerWrapper(env)
         env = SERLObsWrapper(env, proprio_keys=self.proprio_keys)
         env = ChunkingWrapper(env, obs_horizon=1, act_exec_horizon=None)
         # Apply action interpolation to smooth motion between policy steps

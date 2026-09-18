@@ -36,39 +36,20 @@ from examples.auto_trajectory import auto_move_to_target
 
 
 def _compute_auto_action(obs, info, target_pose, speed=0.5):
-    """Compute action in EE frame to move TCP toward target pose.
-
-    The action flows through RelativeFrame which transforms EE→base, so we
-    compute the desired base-frame delta first, then rotate it into the EE frame.
-    """
+    """Compute a base-frame Euler action to move TCP toward target pose."""
     base_pose = info["original_state_obs"]["tcp_pose"]
     current_xyz = base_pose[:3]
     current_quat = base_pose[3:7]
 
-    # --- translation: base-frame error → EE-frame action ---
-    pos_err = target_pose[:3] - current_xyz
-    R_ee = Rot.from_quat(current_quat).as_matrix()
-    R_ee_inv = R_ee.T
-    pos_action_ee = R_ee_inv @ pos_err
-
-    # --- rotation: base-frame rotvec error → EE-frame action ---
-    target_rot = Rot.from_rotvec(target_pose[3:6]).as_matrix()
-    current_rot = Rot.from_quat(current_quat).as_matrix()
-    diff_rot = current_rot.T @ target_rot
-    rot_err_rotvec = Rot.from_matrix(diff_rot).as_rotvec()
-    rot_action_ee = R_ee_inv @ rot_err_rotvec
-
-    # Normalise so that the largest component ≈ 1 when far away, then scale
-    combined = np.concatenate([pos_action_ee, rot_action_ee])
+    # Shortest-path rotation error in base frame, expressed as xyz Euler.
+    current_rot = Rot.from_quat(current_quat)
+    target_rot = Rot.from_rotvec(target_pose[3:6])
+    rot_err = (target_rot * current_rot.inv()).as_euler("xyz")
+    combined = np.concatenate([target_pose[:3] - current_xyz, rot_err])
     norm = np.linalg.norm(combined)
     if norm < 1e-6:
         return np.zeros(6, dtype=np.float32)
-    action_ee = (combined / norm) * speed
-
-    full_action = np.zeros(6, dtype=np.float32)
-    full_action[:3] = np.clip(action_ee[:3], -1.0, 1.0)
-    full_action[3:6] = np.clip(action_ee[3:6], -1.0, 1.0)
-    return full_action
+    return np.clip((combined / norm) * speed, -1.0, 1.0).astype(np.float32)
 
 
 def main(_):

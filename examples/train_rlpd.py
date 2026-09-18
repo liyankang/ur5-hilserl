@@ -76,6 +76,10 @@ def print_green(x):
     return print("\033[92m {}\033[00m".format(x))
 
 
+def print_yellow(x):
+    return print("\033[93m {}\033[00m".format(x))
+
+
 ##############################################################################
 
 
@@ -136,6 +140,20 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
             latest_stem = Path(latest_file).stem  # transitions_<step>
             latest_step = int(latest_stem.rsplit("_", 1)[-1])
             start_step = latest_step + 1
+        # Align with the learner's flax checkpoint step (if it exists) so the
+        # actor does not resume past data the learner skipped loading.
+        latest_ckpt = None
+        if os.path.exists(FLAGS.checkpoint_path):
+            latest_ckpt = checkpoints.latest_checkpoint(
+                os.path.abspath(FLAGS.checkpoint_path)
+            )
+        if latest_ckpt is not None:
+            ckpt_step = int(os.path.basename(latest_ckpt)[11:]) + 1
+            if ckpt_step < start_step:
+                print_yellow(
+                    f"[Actor] Clamping start_step {start_step} to checkpoint step {ckpt_step}"
+                )
+                start_step = ckpt_step
         
     #start_step = (
         #int(os.path.basename(natsorted(glob.glob(os.path.join(FLAGS.checkpoint_path, "buffer/*.pkl")))[-1])[12:-4]) + 1
@@ -561,7 +579,19 @@ def main(_):
         if FLAGS.checkpoint_path is not None and os.path.exists(
             os.path.join(FLAGS.checkpoint_path, "buffer")
         ):
-            for file in glob.glob(os.path.join(FLAGS.checkpoint_path, "buffer/*.pkl")):
+            # Only load buffer files up to the checkpoint step; files newer than
+            # the flax checkpoint would duplicate transitions the actor also
+            # re-collects when resuming from the checkpoint step.
+            buffer_cutoff = start_step if latest_ckpt is not None else None
+            for file in natsorted(
+                glob.glob(os.path.join(FLAGS.checkpoint_path, "buffer/*.pkl"))
+            ):
+                file_step = int(Path(file).stem.rsplit("_", 1)[-1])
+                if buffer_cutoff is not None and file_step > buffer_cutoff:
+                    print_yellow(
+                        f"Skipping buffer file {file} (step {file_step} > checkpoint step {buffer_cutoff})"
+                    )
+                    continue
                 with open(file, "rb") as f:
                     transitions = pkl.load(f)
                     for transition in transitions:
@@ -573,9 +603,16 @@ def main(_):
         if FLAGS.checkpoint_path is not None and os.path.exists(
             os.path.join(FLAGS.checkpoint_path, "demo_buffer")
         ):
-            for file in glob.glob(
-                os.path.join(FLAGS.checkpoint_path, "demo_buffer/*.pkl")
+            demo_buffer_cutoff = start_step if latest_ckpt is not None else None
+            for file in natsorted(
+                glob.glob(os.path.join(FLAGS.checkpoint_path, "demo_buffer/*.pkl"))
             ):
+                file_step = int(Path(file).stem.rsplit("_", 1)[-1])
+                if demo_buffer_cutoff is not None and file_step > demo_buffer_cutoff:
+                    print_yellow(
+                        f"Skipping demo buffer file {file} (step {file_step} > checkpoint step {demo_buffer_cutoff})"
+                    )
+                    continue
                 with open(file, "rb") as f:
                     transitions = pkl.load(f)
                     for transition in transitions:

@@ -624,12 +624,11 @@ class KeyBoardIntervention(gym.ActionWrapper):
 
             # Position error in base frame.
             pos_err_base = target_xyz - current_xyz
-            current_rot = Rot.from_quat(current_quat).as_matrix()
-
-            # Rotation error expressed in base frame so the downstream base env
-            # can apply it directly.
-            target_rot = Rot.from_rotvec(target_rotvec).as_matrix()
-            rot_err_base = Rot.from_matrix(target_rot @ current_rot.T).as_rotvec()
+            # Rotation error expressed as base-frame xyz Euler increments,
+            # using the shortest-path rotation.
+            target_rot = Rot.from_rotvec(target_rotvec)
+            current_rot = Rot.from_quat(current_quat)
+            rot_err_base = (target_rot * current_rot.inv()).as_euler("xyz")
 
             # Proportional control with gain
             kp = 4.0

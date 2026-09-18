@@ -14,39 +14,27 @@ def _homogeneous(pose_quat):
     return T
 
 
-def _convert_obs_for_training(raw_obs, T_r_o_inv):
-    """Convert raw base-env observation to match the wrapper chain output.
-
-    Applies: relative frame transform -> quat->MRP -> SERL flattening.
-    """
+def _convert_obs_for_training(raw_obs, T_r_o_inv=None):
+    """Convert raw base-env observation to absolute base-frame xyz + Euler."""
     state = raw_obs["state"]
-    pose_quat = state["tcp_pose"]  # xyz + quat (7D)
+    pose_quat = state["tcp_pose"]  # base-frame xyz + quat (7D)
+    pose_euler = np.concatenate(
+        [pose_quat[:3], Rot.from_quat(pose_quat[3:7]).as_euler("xyz")]
+    ).astype(np.float32)
 
-    # Relative frame: express pose relative to reset pose
-    T_b_o = _homogeneous(pose_quat)
-    T_b_r = T_r_o_inv @ T_b_o
-    rel_xyz = T_b_r[:3, 3]
-    rel_quat = Rot.from_matrix(T_b_r[:3, :3]).as_quat()
-
-    # Quat -> MRP
-    rel_mrp = Rot.from_quat(rel_quat).as_mrp()
-    pose_out = np.concatenate([rel_xyz, rel_mrp]).astype(np.float32)  # (6,)
-
-    # Build flattened state matching SERLObsWrapper output
-    # proprio_keys = ["tcp_pose", "tcp_vel", "tcp_force", "tcp_torque", "gripper_pose"]
+    # Build flattened state matching SERLObsWrapper output.
     proprio = np.concatenate([
-        pose_out,                                    # tcp_pose (6,)
-        state["tcp_vel"].astype(np.float32),         # tcp_vel (6,)
-        state["tcp_force"].astype(np.float32),       # tcp_force (3,)
-        state["tcp_torque"].astype(np.float32),      # tcp_torque (3,)
-        state["gripper_pose"].flatten().astype(np.float32),  # gripper_pose (1,)
-    ])  # total: 19D
+        pose_euler,                                  # tcp_pose (6,)
+        state["tcp_vel"].astype(np.float32),
+        state["tcp_force"].astype(np.float32),
+        state["tcp_torque"].astype(np.float32),
+        state["gripper_pose"].flatten().astype(np.float32),
+    ])
 
-    obs = {
+    return {
         "state": proprio,
         "images": raw_obs["images"],
     }
-    return obs
 
 
 def auto_move_to_target(env, target_pose, speed_mm=2.0, interrupt_check=None):
@@ -152,37 +140,18 @@ def auto_move_to_target(env, target_pose, speed_mm=2.0, interrupt_check=None):
 
 
 def compute_auto_step_action(base_env, target_pose, speed=0.5):
-    """Compute action in EE frame to move TCP toward target pose.
-
-    Reads current pose directly from base_env (like _compute_auto_action in record_demos.py).
-    The returned action flows through RelativeFrame which transforms EE->base.
-    """
+    """Compute a base-frame Euler action to move TCP toward target pose."""
     base_env._update_currpos()
     base_pose = base_env.currpos.copy()  # xyz + quat (7D)
     current_xyz = base_pose[:3]
     current_quat = base_pose[3:7]
 
-    # --- translation: base-frame error -> EE-frame action ---
-    pos_err = target_pose[:3] - current_xyz
-    R_ee = Rot.from_quat(current_quat).as_matrix()
-    R_ee_inv = R_ee.T
-    pos_action_ee = R_ee_inv @ pos_err
-
-    # --- rotation: base-frame rotvec error -> EE-frame action ---
-    target_rot = Rot.from_rotvec(target_pose[3:6]).as_matrix()
-    current_rot = Rot.from_quat(current_quat).as_matrix()
-    diff_rot = current_rot.T @ target_rot
-    rot_err_rotvec = Rot.from_matrix(diff_rot).as_rotvec()
-    rot_action_ee = R_ee_inv @ rot_err_rotvec
-
-    # Normalise so that the largest component ~ 1 when far away, then scale
-    combined = np.concatenate([pos_action_ee, rot_action_ee])
+    # Shortest-path rotation error in base frame, expressed as xyz Euler.
+    current_rot = Rot.from_quat(current_quat)
+    target_rot = Rot.from_rotvec(target_pose[3:6])
+    rot_err = (target_rot * current_rot.inv()).as_euler("xyz")
+    combined = np.concatenate([target_pose[:3] - current_xyz, rot_err])
     norm = np.linalg.norm(combined)
     if norm < 1e-6:
         return np.zeros(6, dtype=np.float32)
-    action_ee = (combined / norm) * speed
-
-    full_action = np.zeros(6, dtype=np.float32)
-    full_action[:3] = np.clip(action_ee[:3], -1.0, 1.0)
-    full_action[3:6] = np.clip(action_ee[3:6], -1.0, 1.0)
-    return full_action
+    return np.clip((combined / norm) * speed, -1.0, 1.0).astype(np.float32)

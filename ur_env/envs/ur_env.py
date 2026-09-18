@@ -73,6 +73,11 @@ class DefaultEnvConfig:
     ACTION_SCALE = np.zeros((3,))
     ACTION_ROTATION_REPR: str = "euler"
     POSE_ROTATION_REPR: str = "euler"
+    # Hard safety caps on per-control-step physical deltas (applied after
+    # ACTION_SCALE). Prevents a single step from commanding a large jump that
+    # could cause IK solution flips / joint jumps.
+    MAX_STEP_POS_DELTA: float = 0.005  # meters per control step
+    MAX_STEP_ROT_DELTA: float = 0.05   # radians per control step
     RESET_POSE = np.zeros((6,))
     RANDOM_RESET = False
     RANDOM_XY_RANGE = (0.0,)
@@ -109,6 +114,8 @@ class urEnv(gym.Env):
         self.action_scale = config.ACTION_SCALE
         self.action_rotation_repr = getattr(config, "ACTION_ROTATION_REPR", "euler")
         self.pose_rotation_repr = getattr(config, "POSE_ROTATION_REPR", "euler")
+        self.max_step_pos_delta = getattr(config, "MAX_STEP_POS_DELTA", 0.005)
+        self.max_step_rot_delta = getattr(config, "MAX_STEP_ROT_DELTA", 0.05)
         self._TARGET_POSE = config.TARGET_POSE
         self._RESET_POSE = config.RESET_POSE
         self._REWARD_THRESHOLD = config.REWARD_THRESHOLD
@@ -245,12 +252,14 @@ class urEnv(gym.Env):
         """standard gym step function."""
         start_time = time.time()
         action = np.clip(action, self.action_space.low, self.action_space.high)
-        xyz_delta = action[:3]
+        xyz_delta = action[:3] * self.action_scale[0]
+        xyz_delta = np.clip(xyz_delta, -self.max_step_pos_delta, self.max_step_pos_delta)
 
         self.nextpos = self.currpos.copy()
-        self.nextpos[:3] = self.nextpos[:3] + xyz_delta * self.action_scale[0]
+        self.nextpos[:3] = self.nextpos[:3] + xyz_delta
 
         rot_delta = action[3:6] * self.action_scale[1]
+        rot_delta = np.clip(rot_delta, -self.max_step_rot_delta, self.max_step_rot_delta)
         if self.action_rotation_repr == "euler":
             delta_rotation = Rotation.from_euler("xyz", rot_delta)
         elif self.action_rotation_repr == "rotvec":

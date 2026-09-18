@@ -70,24 +70,24 @@ class EnvConfig(DefaultEnvConfig):
     REALSENSE_CAMERAS = CAMERAS
 
     IMAGE_CROP = {
-        "global_1": lambda img: img[201:359, 631:912],
+        "global_1": lambda img: img[47:520, 409:959],
         "wrist": lambda img: img[195:720, 358:977],
         "global_2": lambda img: img[410:656, 354:649],
 
     }
     # Pose convention in this config: xyz + rotvec (UR RTDE native orientation).
-    TARGET_POSE = np.array([0.0879, -0.6314, -0.2161, 2.7565, 1.2696, 0.0550])
-    GRASP_POSE = np.array([0.0879, -0.6314, -0.2161, 2.7565, 1.2696, 0.0550])
+    TARGET_POSE = np.array([0.1097, -0.6587, -0.2150, 2.9328, -1.0876, 0.0378])
+    GRASP_POSE = np.array([0.1097, -0.6587, -0.2150, 2.9328, -1.0876, 0.0378])
     # Sparse task reward: reward=1 when TCP pose (xyz + rotvec) reaches TARGET_POSE within tolerance.
     REWARD_THRESHOLD = np.array([0.005, 0.005, 0.005, 0.02, 0.02, 0.02], dtype=np.float64)
     RESET_POSE = TARGET_POSE + np.array([0, 0, 0.1, 0, 0, 0])
     # Keep translation bounds tight, no rotation allowed.
-    ABS_POSE_LIMIT_LOW = TARGET_POSE - np.array([0.05, 0.05, 0.02, 0, 0, 0])
-    ABS_POSE_LIMIT_HIGH = TARGET_POSE + np.array([0.05, 0.05, 0.15, 0, 0, 0])
+    ABS_POSE_LIMIT_LOW = TARGET_POSE - np.array([0.05, 0.05, 0.02, 0, 0, 0.2])
+    ABS_POSE_LIMIT_HIGH = TARGET_POSE + np.array([0.05, 0.05, 0.15, 0, 0, 0.2])
     RANDOM_RESET = True
-    RANDOM_XY_RANGE = 0.02
-    RANDOM_RZ_RANGE = 0.02
-    ACTION_SCALE = (0.003, 0.001, 1)
+    RANDOM_XY_RANGE = 0.03
+    RANDOM_RZ_RANGE = 0.03
+    ACTION_SCALE = (0.003, 0.003, 1)
     ACTION_ROTATION_REPR = "rotvec"
     POSE_ROTATION_REPR = "rotvec"
     DISPLAY_IMAGE = True
@@ -102,17 +102,17 @@ class EnvConfig(DefaultEnvConfig):
     # 安装夹具后，请用秤称质量，并运行 height.py 标定重心，然后更新以下参数：
     # 解释：合规性参数，用于控制机器人在执行任务时的合规性
     COMPLIANCE_PARAM = {
-        "translational_stiffness": 1200,
+        "translational_stiffness": 2000,
         "translational_damping": 89,
         "rotational_stiffness": 150,
         "rotational_damping": 7,
         "translational_Ki": 0,
         "translational_clip_x": 0.0075,
         "translational_clip_y": 0.0016,
-        "translational_clip_z": 0.0055,
+        "translational_clip_z": 0.012,
         "translational_clip_neg_x": 0.002,
         "translational_clip_neg_y": 0.0016,
-        "translational_clip_neg_z": 0.005,
+        "translational_clip_neg_z": 0.012,
         "rotational_clip_x": 0.01,
         "rotational_clip_y": 0.025,
         "rotational_clip_z": 0.005,

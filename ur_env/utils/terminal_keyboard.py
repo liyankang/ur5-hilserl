@@ -59,7 +59,9 @@ class TerminalKeyboardHub:
 
             self._fd = fd
             self._old_settings = termios.tcgetattr(fd)
-            tty.setraw(fd)
+            # cbreak 而不是 raw：两者都是逐字符无缓冲读取，但 cbreak 保留了
+            # 输出的换行处理，raw 模式下 print 的 "\n" 只下移不回车会变成阶梯状。
+            tty.setcbreak(fd)
 
             while not self._stop_event.is_set():
                 rlist, _, _ = select.select([fd], [], [], 0.1)
@@ -122,7 +124,7 @@ class TerminalKeyboardHub:
         """Re-enter raw mode after suspend()."""
         if self._fd is not None:
             try:
-                tty.setraw(self._fd)
+                tty.setcbreak(self._fd)
             except Exception:
                 pass
 

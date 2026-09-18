@@ -15,6 +15,7 @@ python3 serl_robot_ur/robot_servers/ur_server.py \
   --gripper_type=None \
   --controller_mode=forcemode \
   --control_hz=100.0 \
+  --force_mode_selection 0 0 1 0 0 0 \
   --default_speed=0.05 \
   --default_accel=0.05 \
   --flask_host="${FLASK_HOST}" \

@@ -18,11 +18,19 @@ import argparse
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
 import requests
 from scipy.spatial.transform import Rotation as R
+
+# Ensure the repo root is importable when running this file directly.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from ur_env.utils.terminal_keyboard import TERMINAL_KEYBOARD_HUB
 
 
 @dataclass
@@ -168,28 +176,21 @@ class KeyboardServerTeleop:
         print("  P: print current state")
         print("  C: clear error")
         print("  H: joint reset")
-        print("  Q or Esc: quit")
+        print("  Q: quit")
 
     def _build_keyboard_intervention(self):
         from ur_env.envs.wrappers import KeyboardIntervention
 
         return KeyboardIntervention(_DummyKeyboardEnv())
 
-    def on_press(self, key):
-        from pynput import keyboard
-
-        if key == keyboard.Key.esc:
-            self.running = False
-            return False
-
-        try:
-            key_str = key.char.lower()
-        except AttributeError:
+    def on_press(self, ch):
+        if not ch or not ch.isprintable():
             return
+        key_str = ch.lower()
 
         if key_str == "q":
             self.running = False
-            return False
+            return
         if key_str == "p":
             self.print_state()
             return
@@ -259,10 +260,8 @@ class KeyboardServerTeleop:
             time.sleep(0.5)
 
     def run(self):
-        from pynput import keyboard
-
-        listener = keyboard.Listener(on_press=self.on_press)
-        listener.start()
+        # 与 KeyboardIntervention 共用同一个终端按键监听（不依赖 X/Wayland）
+        unregister = TERMINAL_KEYBOARD_HUB.register(self.on_press)
         self.print_state()
         try:
             while self.running:
@@ -270,9 +269,7 @@ class KeyboardServerTeleop:
                 self.step()
                 time.sleep(max(0.0, self.period - (time.time() - loop_start)))
         finally:
-            listener.stop()
-            if hasattr(self.keyboard_intervention, "listener"):
-                self.keyboard_intervention.listener.stop()
+            unregister()
 
 
 def main() -> int:
@@ -299,10 +296,8 @@ def main() -> int:
         print("Server checks failed. Fix the FAIL items before interactive motion.")
         return 1
 
-    try:
-        import pynput  # noqa: F401
-    except ModuleNotFoundError:
-        print("Interactive keyboard control requires `pynput`. Install it before running without --check_only.")
+    if not sys.stdin.isatty():
+        print("Interactive keyboard control requires a TTY: run it in an interactive terminal.")
         return 1
 
     print("Starting keyboard control. Keep the robot in a safe area.")

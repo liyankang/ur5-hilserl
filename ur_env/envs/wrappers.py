@@ -561,6 +561,12 @@ class KeyBoardIntervention(gym.ActionWrapper):
             "s": (1, -1.0),
             "j": (2, 1.0),
             "k": (2, -1.0),
+            "z": (3, 1.0),
+            "x": (3, -1.0),
+            "v": (4, 1.0),
+            "b": (4, -1.0),
+            "n": (5, 1.0),
+            "m": (5, -1.0),
         }
         self.pending_action = np.zeros((6,), dtype=np.float32)
         self._gripper_toggle_requested = False
@@ -574,7 +580,8 @@ class KeyBoardIntervention(gym.ActionWrapper):
 
         print(
             "Keyboard intervention enabled (OFF by default): "
-            "press W/S/A/D/J/K for XYZ movement, ; to toggle intervention, G for go-to-target, F to mark success"
+            "press W/S/A/D/J/K for XYZ movement, Z/X/V/B/N/M for RX/RY/RZ rotation, "
+            "; to toggle intervention, G for go-to-target, F to mark success"
             + (", L to toggle gripper" if self.gripper_enabled else "")
         )
 

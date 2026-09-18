@@ -15,8 +15,8 @@ python3 serl_robot_ur/robot_servers/ur_server.py \
   --gripper_type=None \
   --controller_mode=servo \
   --control_hz=50.0 \
-  --default_speed=0.05 \
-  --default_accel=0.05 \
+  --default_speed=0.08 \
+  --default_accel=0.08 \
   --flask_host="${FLASK_HOST}" \
   --flask_port="${FLASK_PORT}" \
   --log_level="${LOG_LEVEL}" \

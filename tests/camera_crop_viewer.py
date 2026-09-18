@@ -9,10 +9,9 @@
 """
 import cv2, time, sys
 import numpy as np
-
 # 与 examples/experiments/ram_insertion/config.py 的 CAMERAS / IMAGE_CROP 保持一致
 CAMERAS = {
-    "global_1": {"device": "/dev/video2", "dim": (1280, 720), "crop": (201, 359, 631, 912)},
+    "global_1": {"device": "/dev/video2", "dim": (1280, 720), "crop": (47, 520, 409, 959)},
     "wrist": {"device": "/dev/video4", "dim": (1280, 720), "crop": (195, 720, 358, 977)},
     "global_2": {"device": "/dev/video0", "dim": (1280, 720), "crop": (410, 656, 354, 649)},
 }

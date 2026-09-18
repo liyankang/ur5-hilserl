@@ -222,7 +222,7 @@ bash serl_robot_ur/robot_servers/launch_ur_server_no_gripper_forcemode.sh 192.16
 
 
 python record_demos.py --exp_name ram_insertion --successes_needed 40 --auto
-
+python record_demos.py --exp_name ram_insertion --successes_needed 40 --auto --auto_speed 0.8
 
 
 MODE=train bash run_actor.sh

@@ -17,7 +17,7 @@ UR5 Force Mode 独立测试脚本（不需要外置六维力传感器）
     --force-limit 调小，并确保周围无人、机器人处于安全状态。
   * 建议先在"贴近但不接触"的位置试恒力，再逐步贴近工件。
 
-键盘：
+键盘（直接读终端 /dev/tty，不依赖 X/Wayland，SSH 里也能用）：
   1 / 2 / 3   切换模式
   f           启用力控       空格  立即停止力控（退出 force mode）
   x / y / z   恒力模式：选择作用轴      r  反向      + / -  力大小 ±0.5N
@@ -32,9 +32,13 @@ UR5 Force Mode 独立测试脚本（不需要外置六维力传感器）
 
 import argparse
 import csv
+import os
+import select
 import sys
+import termios
 import threading
 import time
+import tty
 from collections import deque
 
 import numpy as np
@@ -47,11 +51,92 @@ except ImportError:
     print("错误: 缺少 RTDE 库，请先安装 (pip install ur-rtde)")
     sys.exit(1)
 
-try:
-    from pynput import keyboard
-except ImportError:
-    print("错误: 缺少 pynput，请先安装 (pip install pynput)")
-    sys.exit(1)
+
+class _TerminalKeyListener:
+    """终端按键监听：读 /dev/tty，无 X/Wayland 依赖（服务器/SSH 可用）。
+
+    终端没有"松开"事件，这里用静默超时合成 release：收到字符视为按下，
+    超过 release_timeout 没有再收到字符视为松开（与按住时的键盘重复配合）。
+    """
+
+    def __init__(self, on_press, on_release=None, release_timeout=0.12):
+        self.on_press = on_press
+        self.on_release = on_release
+        self.release_timeout = release_timeout
+        self._fd = None
+        self._owns_fd = False
+        self._old_settings = None
+        self._thread = None
+        self._stop = threading.Event()
+
+    def start(self):
+        try:
+            try:
+                fd = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
+                self._owns_fd = True
+            except OSError:
+                fd = sys.stdin.fileno()
+                self._owns_fd = False
+            if not os.isatty(fd):
+                raise OSError("not a tty")
+            self._old_settings = termios.tcgetattr(fd)
+        except Exception:
+            print("提示: 当前环境没有可用的 TTY，键盘输入不可用；请在交互式终端里运行")
+            return
+        self._fd = fd
+        # cbreak：关掉行缓冲和回显，但保留输出的换行处理。
+        # 用 raw 模式会让 "\n" 只下移不回车，所有 print 会变成阶梯状。
+        tty.setcbreak(fd, termios.TCSAFLUSH)
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _loop(self):
+        last = None
+        while not self._stop.is_set():
+            try:
+                rlist, _, _ = select.select([self._fd], [], [], 0.02)
+            except Exception:
+                break
+            now = time.monotonic()
+            if rlist:
+                try:
+                    data = os.read(self._fd, 1)
+                except OSError:
+                    break
+                if data:
+                    ch = data.decode(errors="ignore")
+                    if ch:
+                        self._fire(self.on_press, ch)
+                        last = (now, ch)
+                        continue
+            if last is not None and now - last[0] > self.release_timeout:
+                self._fire(self.on_release, last[1])
+                last = None
+
+    def _fire(self, callback, ch):
+        if callback is None:
+            return
+        try:
+            callback(ch)
+        except Exception:
+            pass
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+        if self._old_settings is not None and self._fd is not None:
+            try:
+                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_settings)
+            except Exception:
+                pass
+            self._old_settings = None
+        if self._owns_fd and self._fd is not None:
+            try:
+                os.close(self._fd)
+            except Exception:
+                pass
+            self._fd = None
 
 
 # ── 默认参数（位置限幅/刚度与 examples/experiments/ram_insertion/config.py 的
@@ -147,7 +232,7 @@ class ForceModeTester:
         if not connected:
             print("警告: RTDE 控制口未连接，检查网线/IP/是否被其它程序占用")
 
-        self.listener = keyboard.Listener(
+        self.listener = _TerminalKeyListener(
             on_press=self._on_press, on_release=self._on_release
         )
         self.listener.start()
@@ -188,10 +273,9 @@ class ForceModeTester:
         self.force_req = np.zeros(6)
 
     # ── 键盘 ────────────────────────────────────────────────────────────────
-    def _on_press(self, key):
+    def _on_press(self, ch):
         try:
-            ch = getattr(key, "char", None)
-            if ch is None:
+            if not ch or not ch.isprintable():
                 return
             ch = ch.lower()
             with self.lock:
@@ -233,12 +317,12 @@ class ForceModeTester:
         except Exception:
             pass
 
-    def _on_release(self, key):
+    def _on_release(self, ch):
         try:
-            ch = getattr(key, "char", None)
-            if ch:
-                with self.lock:
-                    self.key_times.pop(ch.lower(), None)
+            if not ch:
+                return
+            with self.lock:
+                self.key_times.pop(ch.lower(), None)
         except Exception:
             pass
 

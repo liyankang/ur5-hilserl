@@ -58,11 +58,11 @@ class EnvConfig(DefaultEnvConfig):
             "dim": (1280, 720),
         },
         "wrist": {
-            "video_device": "/dev/video1",
-            "dim": (640, 480),
+            "video_device": "/dev/video4",
+            "dim": (1280, 720),
         },
         "global_2": {
-            "video_device": "/dev/video4",
+            "video_device": "/dev/video0",
             "dim": (1280, 720),
         },
     }
@@ -70,14 +70,14 @@ class EnvConfig(DefaultEnvConfig):
     REALSENSE_CAMERAS = CAMERAS
 
     IMAGE_CROP = {
-        "global_1": lambda img: img[191:408, 547:753],
-        "wrist": lambda img: img[130:480, 159:409],
-        "global_2": lambda img: img[425:653, 421:555],
+        "global_1": lambda img: img[201:359, 631:912],
+        "wrist": lambda img: img[195:720, 358:977],
+        "global_2": lambda img: img[410:656, 354:649],
 
     }
     # Pose convention in this config: xyz + rotvec (UR RTDE native orientation).
-    TARGET_POSE = np.array([0.0879, -0.6300, -0.2381, 2.7588, 1.2847, 0.0436])
-    GRASP_POSE = np.array([0.0879, -0.6300, -0.2381, 2.7588, 1.2847, 0.0436])
+    TARGET_POSE = np.array([0.0879, -0.6314, -0.2161, 2.7565, 1.2696, 0.0550])
+    GRASP_POSE = np.array([0.0879, -0.6314, -0.2161, 2.7565, 1.2696, 0.0550])
     # Sparse task reward: reward=1 when TCP pose (xyz + rotvec) reaches TARGET_POSE within tolerance.
     REWARD_THRESHOLD = np.array([0.005, 0.005, 0.005, 0.02, 0.02, 0.02], dtype=np.float64)
     RESET_POSE = TARGET_POSE + np.array([0, 0, 0.1, 0, 0, 0])
@@ -100,10 +100,6 @@ class EnvConfig(DefaultEnvConfig):
     RESET_INTERPOLATE_TIMEOUT =2.0
     # 空载（无法兰夹具）
     # 安装夹具后，请用秤称质量，并运行 height.py 标定重心，然后更新以下参数：
-    LOAD_PARAM = {
-        "mass": 1.0,
-        "F_x_center_load": [0.0, 0.0, 0.07],
-    }
     # 解释：合规性参数，用于控制机器人在执行任务时的合规性
     COMPLIANCE_PARAM = {
         "translational_stiffness": 1200,

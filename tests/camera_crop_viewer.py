@@ -10,10 +10,11 @@
 import cv2, time, sys
 import numpy as np
 
+# 与 examples/experiments/ram_insertion/config.py 的 CAMERAS / IMAGE_CROP 保持一致
 CAMERAS = {
-    "wrist_1": {"device": "/dev/video0", "crop": (0, 540, 100, 500)},
-    "wrist_2": {"device": "/dev/video2", "crop": (120, 500, 500, 800)},
-    "wrist_3": {"device": "/dev/video4", "crop": (200, 500, 450, 700)},
+    "global_1": {"device": "/dev/video2", "dim": (1280, 720), "crop": (201, 359, 631, 912)},
+    "wrist": {"device": "/dev/video4", "dim": (1280, 720), "crop": (195, 720, 358, 977)},
+    "global_2": {"device": "/dev/video0", "dim": (1280, 720), "crop": (410, 656, 354, 649)},
 }
 # crop: (y1, y2, x1, x2) → img[y1:y2, x1:x2]
 
@@ -36,6 +37,11 @@ def main():
     if not cap.isOpened():
         print(f"打开 {device} 失败！")
         sys.exit(1)
+    # 与 config 一样先设定采集分辨率，否则裁剪坐标对不上
+    dim = cfg.get("dim")
+    if dim is not None:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(dim[0]))
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(dim[1]))
     time.sleep(0.3)
 
     def grab_frame():

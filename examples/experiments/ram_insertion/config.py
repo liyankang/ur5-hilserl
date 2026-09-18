@@ -124,6 +124,9 @@ class EnvConfig(DefaultEnvConfig):
         "rotational_clip_neg_y": 0.025,
         "rotational_clip_neg_z": 0.005,
         "rotational_Ki": 0,
+        # 柔顺轴选择：1=柔顺，0=刚性（位置保持）。默认只 z 轴柔顺，锁 xy 与姿态，
+        # 避免自由空间侧向摆动；需要 xy 对齐柔顺时把对应位置成 1。
+        "force_mode_selection_vector": [0, 0, 1, 0, 0, 0],
     }
     #解释：精度参数，用于控制机器人在执行任务时的精度和稳定性
     PRECISION_PARAM = {

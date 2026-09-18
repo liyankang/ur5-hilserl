@@ -355,6 +355,15 @@ class URStreamingController:
             applied["force_mode_damping"] = self.force_mode_damping
             consumed_keys.add("force_mode_damping")
 
+        selection_vector = params.get("force_mode_selection_vector")
+        if selection_vector is not None:
+            sv = np.asarray(selection_vector, dtype=np.int32).reshape(-1)
+            if sv.size != 6:
+                raise ValueError("force_mode_selection_vector must have 6 elements")
+            self.force_mode_selection_vector = np.clip(sv, 0, 1).astype(np.int32)
+            applied["force_mode_selection_vector"] = self.force_mode_selection_vector.tolist()
+            consumed_keys.add("force_mode_selection_vector")
+
         ignored = sorted([key for key in params if key not in consumed_keys])
         return {"applied": applied, "ignored": ignored}
 
@@ -572,7 +581,10 @@ class URStreamingController:
         rot_error = np.where(np.abs(rot_error) < self.force_mode_rot_deadband, 0.0, rot_error)
         rot_error = np.clip(rot_error, -self.rotational_clip_neg, self.rotational_clip)
         torque = self.rotational_stiffness * rot_error - self.rotational_damping * vel[3:]
-        return np.concatenate([force, torque]).astype(np.float64)
+        wrench = np.concatenate([force, torque]).astype(np.float64)
+        # 非柔顺轴（selection=0）不施加力/力矩，交给 UR 位置保持
+        wrench = wrench * self.force_mode_selection_vector.astype(np.float64)
+        return wrench
 
     def _run(self):
         dt = 1.0 / self.control_hz

@@ -89,16 +89,12 @@ class EnvConfig(DefaultEnvConfig):
     ABS_POSE_LIMIT_HIGH = TARGET_POSE + np.array([0.05, 0.05, 0.15, 0.01, 0.01, 0.01])
     RANDOM_RESET = True
     RANDOM_XY_RANGE = 0.03
-<<<<<<< HEAD
-    RANDOM_RZ_RANGE = 0.03
-    ACTION_SCALE = (0.01, 0.01, 1)
-=======
     RANDOM_RZ_RANGE = 0.0001
     ACTION_SCALE = (0.003, 0.003, 1)
->>>>>>> 1bae9297caf02af557ef7c3beddaec79f4d7c374
     ACTION_ROTATION_REPR = "rotvec"
     POSE_ROTATION_REPR = "rotvec"
     DISPLAY_IMAGE = True
+    DISPLAY_IMAGE_SIZE = (500, 500)
     GRIPPER_SLEEP = 0.0
     GRIPPER_ENABLED = False
     MAX_EPISODE_LENGTH = 100

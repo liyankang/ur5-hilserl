@@ -37,9 +37,19 @@ class ImageDisplayer(threading.Thread):
             if img_array is None:  # None is our signal to exit
                 break
 
-            frame = np.concatenate(
-                [cv2.resize(v, self.display_size) for k, v in img_array.items() if "full" not in k], axis=1
-            )
+            frames = [v for k, v in img_array.items() if "full" not in k]
+            # Display the original camera frames without task cropping or model resizing.
+            heights = {frame.shape[0] for frame in frames}
+            if len(heights) == 1:
+                frame = np.concatenate(frames, axis=1)
+            else:
+                # Keep mixed camera resolutions displayable while preserving each frame's pixels.
+                height = max(heights)
+                padded = []
+                for image in frames:
+                    pad = np.zeros((height - image.shape[0], image.shape[1], image.shape[2]), dtype=image.dtype)
+                    padded.append(np.concatenate([image, pad], axis=0))
+                frame = np.concatenate(padded, axis=1)
 
             cv2.imshow(self.name, frame)
             cv2.waitKey(1)
@@ -316,7 +326,7 @@ class urEnv(gym.Env):
                     cropped_rgb, self.observation_space["images"][key].shape[:2][::-1]
                 )
                 images[key] = resized[..., ::-1]
-                display_images[key] = resized
+                display_images[key] = rgb
                 display_images[key + "_full"] = cropped_rgb
                 full_res_images[key] = copy.deepcopy(cropped_rgb)  # Store the full resolution cropped image
             except queue.Empty:

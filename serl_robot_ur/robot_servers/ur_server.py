@@ -20,6 +20,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 from flask import Flask, g, jsonify, request
+from scipy.spatial.transform import Rotation as R
 
 try:
     import rtde_control
@@ -203,7 +204,6 @@ class URStreamingController:
         default_accel: float = 0.2,
         disable_motion: bool = False,
         start_paused_until_pose: bool = False,
-        force_mode_selection=None,
         rtde_control_cls=None,
         rtde_receive_cls=None,
         logger_instance: Optional[logging.Logger] = None,
@@ -235,32 +235,20 @@ class URStreamingController:
         self.translational_clip_neg = np.array([0.01, 0.01, 0.01], dtype=np.float64)
         self.rotational_clip = np.array([0.05, 0.05, 0.05], dtype=np.float64)
         self.rotational_clip_neg = np.array([0.05, 0.05, 0.05], dtype=np.float64)
-        # UR 默认 0.005（近无阻尼），一旦指令力越过 Z 的干摩擦死区就会以
-        # 36-42 mm/s 冲出去。0.9 把响应压成单调且缓慢（12N -> 约 3 mm/s）。
-        self.force_mode_damping = 0.9
-        # Z 轴用三态恒力，不用 K*Δp 比例律：Z 轴的干/静摩擦阈值实测 20~30N，
-        # 比例项会在死区边缘反复推-停形成极限环（上下抖动），恒力没有这条反馈路径。
-        # 30N 是"从静止起压能可靠走到目标"的最小值：20N 时只能走约 11mm 就卡住。
-        self.force_mode_push_force = 30.0
-        self.force_mode_z_deadband = 0.003
+        self.force_mode_damping = 0.05
         self.force_mode_task_frame = np.zeros((6,), dtype=np.float64)
         self.force_mode_selection_vector = np.ones((6,), dtype=np.int32)
-        if force_mode_selection is not None:
-            selection = np.asarray(force_mode_selection, dtype=np.int32).reshape(-1)
-            if selection.size != 6 or not np.all(np.isin(selection, (0, 1))):
-                raise ValueError(
-                    "force_mode_selection must hold 6 values, 0 = position controlled, 1 = compliant"
-                )
-            self.force_mode_selection_vector = selection
         self.force_mode_limits = np.array([2.0, 2.0, 2.0, 1.5, 1.5, 1.5], dtype=np.float64)
         self.force_mode_idle_timeout = 0.2
-        self.force_mode_task_frame = np.zeros((6,), dtype=np.float64)
+        self.force_mode_pos_deadband = np.array([5e-4, 5e-4, 5e-4], dtype=np.float64)
+        self.force_mode_rot_deadband = np.array([5e-3, 5e-3, 5e-3], dtype=np.float64)
+        self.force_mode_vel_deadband = np.array([5e-3, 5e-3, 5e-3, 1e-2, 1e-2, 1e-2], dtype=np.float64)
         self.pose_filter_alpha = 0.2
         self.vel_filter_alpha = 0.1
         self.force_filter_alpha = 0.1
         self.last_policy_target_time = 0.0
         self._force_mode_active = False
-        self._force_mode_warn_time = 0.0
+        self._direct_force_command = None
         self._filtered_pose_rtde = None
         self._filtered_vel_rtde = None
         self._filtered_force_rtde = None
@@ -282,14 +270,12 @@ class URStreamingController:
         self.last_state = state
         self._thread.start()
         self.logger.info(
-            "controller_initialized robot_ip=%s mode=%s control_hz=%.1f disable_motion=%s "
-            "start_paused_until_pose=%s force_mode_selection=%s",
+            "controller_initialized robot_ip=%s mode=%s control_hz=%.1f disable_motion=%s start_paused_until_pose=%s",
             self.robot_ip,
             self.controller_mode,
             self.control_hz,
             self.disable_motion,
             self.start_paused_until_pose,
-            self.force_mode_selection_vector.tolist(),
         )
 
     def close(self):
@@ -370,16 +356,6 @@ class URStreamingController:
             applied["force_mode_damping"] = self.force_mode_damping
             consumed_keys.add("force_mode_damping")
 
-        if "force_mode_push_force" in params:
-            self.force_mode_push_force = float(np.clip(float(params["force_mode_push_force"]), 0.0, 60.0))
-            applied["force_mode_push_force"] = self.force_mode_push_force
-            consumed_keys.add("force_mode_push_force")
-
-        if "force_mode_z_deadband" in params:
-            self.force_mode_z_deadband = float(np.clip(float(params["force_mode_z_deadband"]), 0.0, 0.05))
-            applied["force_mode_z_deadband"] = self.force_mode_z_deadband
-            consumed_keys.add("force_mode_z_deadband")
-
         ignored = sorted([key for key in params if key not in consumed_keys])
         return {"applied": applied, "ignored": ignored}
 
@@ -417,18 +393,73 @@ class URStreamingController:
             _optional_or_default(accel, self.target_accel),
         )
         with self._lock:
+            self._direct_force_command = None
             self.target_pose = pose
             if speed is not None:
                 self.target_speed = float(speed)
             if accel is not None:
                 self.target_accel = float(accel)
-            if source in ("policy", "reset"):
+            if source == "policy":
                 self.last_policy_target_time = time.monotonic()
-            if self._servo_paused and self.start_paused_until_pose and source in ("policy", "reset"):
+            if self._servo_paused and self.start_paused_until_pose and source == "policy":
                 self._servo_paused = False
                 self.start_paused_until_pose = False
                 self.logger.info("motion_resumed_after_first_pose")
             return self.target_pose.copy()
+
+    def set_force_mode(self, command: dict[str, Any]) -> dict[str, Any]:
+        if self.controller_mode != "forcemode":
+            raise ValueError("Direct force control requires --controller_mode=forcemode")
+        command = dict(command or {})
+
+        def vector(name, default=None):
+            value = command.get(name, default)
+            if value is None:
+                raise ValueError(f"Missing '{name}'")
+            result = np.asarray(value, dtype=np.float64).reshape(-1)
+            if result.size != 6 or not np.all(np.isfinite(result)):
+                raise ValueError(f"'{name}' must contain 6 finite numbers")
+            return result
+
+        selection = vector("selection_vector", [1, 1, 1, 1, 1, 1])
+        if not np.all(np.isin(selection, [0, 1])) or not np.any(selection):
+            raise ValueError("'selection_vector' must select at least one axis using only 0 or 1")
+        wrench = vector("wrench")
+        if np.any(np.abs(wrench[:3]) > 20.0) or np.any(np.abs(wrench[3:]) > 5.0):
+            raise ValueError("Wrench is limited to 20 N per force axis and 5 Nm per torque axis")
+        task_frame = vector("task_frame", [0.0] * 6)
+        limits = vector("limits", [0.05, 0.05, 0.05, 0.2, 0.2, 0.2])
+        if np.any(limits <= 0.0) or np.any(limits[:3] > 0.1) or np.any(limits[3:] > 0.5):
+            raise ValueError("'limits' must be positive and no greater than 0.1 m/s or 0.5 rad/s per axis")
+        mode = command.get("type", 2)
+        if isinstance(mode, bool) or mode not in (1, 2):
+            raise ValueError("'type' must be 1 or 2")
+        duration = float(command.get("duration", 1.0))
+        if not np.isfinite(duration) or not 0.0 < duration <= 2.0:
+            raise ValueError("'duration' must be greater than 0 and no greater than 2 seconds")
+
+        stored = {
+            "task_frame": task_frame.tolist(),
+            "selection_vector": selection.astype(np.int32).tolist(),
+            "wrench": wrench.tolist(),
+            "type": int(mode),
+            "limits": limits.tolist(),
+            "expires_at": time.monotonic() + duration,
+        }
+        with self._lock:
+            self._direct_force_command = stored
+            self.last_policy_target_time = time.monotonic()
+        self.logger.info(
+            "direct_force_mode_started selection=%s wrench=%s duration=%.2f",
+            stored["selection_vector"], stored["wrench"], duration,
+        )
+        return {key: value for key, value in stored.items() if key != "expires_at"}
+
+    def stop_force_mode(self) -> None:
+        with self._lock:
+            self._direct_force_command = None
+            self.last_policy_target_time = 0.0
+        self.logger.info("direct_force_mode_stopped")
 
     def move_joints(self, q, speed=None, accel=None) -> np.ndarray:
         q = np.asarray(q, dtype=np.float64).reshape(-1)
@@ -581,34 +612,29 @@ class URStreamingController:
         return new_pos, new_neg, consumed_keys
 
     def _compute_force_mode_wrench(self, state: dict[str, Any], target_pose: np.ndarray) -> np.ndarray:
-        """Z 轴三态恒力：目标在下方 → 恒定下压，在上方 → 恒定上抬，进入死区 → 不出力。
-
-        刻意不用 K*Δp - D*v 比例律。Z 的干摩擦死区约 15N，比例项会在死区边缘
-        反复"推一下-停一下"形成极限环，也就是上下抖动；恒力没有位置反馈路径，
-        所以不存在这个振荡机制。非柔顺轴（selection=0）不受 wrench 影响。
-        返回全 0 时 _run_loop 会 forceModeStop，由 UR 保持当前位置。
-        """
         curr_pose = np.asarray(state["pose"], dtype=np.float64)
-        wrench = np.zeros((6,), dtype=np.float64)
-        z_error = target_pose[2] - curr_pose[2]
-        if abs(z_error) <= self.force_mode_z_deadband:
-            return wrench
-        wrench[2] = np.sign(z_error) * self.force_mode_push_force
-        return wrench
+        curr_vel = np.asarray(state["vel"], dtype=np.float64)
+        pos_error = target_pose[:3] - curr_pose[:3]
+        pos_error = np.where(np.abs(pos_error) < self.force_mode_pos_deadband, 0.0, pos_error)
+        pos_error = np.clip(
+            pos_error,
+            -self.translational_clip_neg,
+            self.translational_clip,
+        )
+        vel = np.where(np.abs(curr_vel) < self.force_mode_vel_deadband, 0.0, curr_vel)
+        force = self.translational_stiffness * pos_error - self.translational_damping * vel[:3]
+
+        rot_error = (R.from_quat(target_pose[3:]) * R.from_quat(curr_pose[3:]).inv()).as_rotvec()
+        rot_error = np.where(np.abs(rot_error) < self.force_mode_rot_deadband, 0.0, rot_error)
+        rot_error = np.clip(rot_error, -self.rotational_clip_neg, self.rotational_clip)
+        torque = self.rotational_stiffness * rot_error - self.rotational_damping * vel[3:]
+        return np.concatenate([force, torque]).astype(np.float64)
 
     def _run(self):
         dt = 1.0 / self.control_hz
         if self.controller_mode == "forcemode":
             _call_optional(self.rtde_c, ["forceModeSetDamping"], self.force_mode_damping)
             _call_optional(self.rtde_c, ["zeroFtSensor"])
-        try:
-            self._run_loop(dt)
-        except Exception:
-            # Without this the servo thread would die silently and every later
-            # /pose request would be accepted while the robot never moves.
-            self.logger.exception("servo_loop_crashed mode=%s", self.controller_mode)
-
-    def _run_loop(self, dt: float):
         while not self._stop_event.is_set():
             if self.disable_motion:
                 # Dry-run mode for debugging command generation without moving the robot.
@@ -624,12 +650,21 @@ class URStreamingController:
                 target_pose = self.target_pose.copy()
                 speed = self.target_speed
                 accel = self.target_accel
+                direct_force = self._direct_force_command
 
             state = self.get_state()
             with self._motion_lock:
                 period = _call_optional(self.rtde_c, ["initPeriod"])
                 if self.controller_mode == "forcemode":
-                    policy_is_fresh = (time.monotonic() - self.last_policy_target_time) <= self.force_mode_idle_timeout
+                    if direct_force is not None and time.monotonic() >= direct_force["expires_at"]:
+                        with self._lock:
+                            if self._direct_force_command is direct_force:
+                                self._direct_force_command = None
+                                self.last_policy_target_time = 0.0
+                        direct_force = None
+                    policy_is_fresh = direct_force is not None or (
+                        (time.monotonic() - self.last_policy_target_time) <= self.force_mode_idle_timeout
+                    )
                     if not policy_is_fresh:
                         if self._force_mode_active:
                             _call_optional(self.rtde_c, ["forceModeStop"])
@@ -640,8 +675,12 @@ class URStreamingController:
                         if remaining > 0:
                             time.sleep(remaining)
                         continue
-                    wrench = self._compute_force_mode_wrench(state, target_pose)
-                    if np.allclose(wrench, 0.0, atol=1e-6):
+                    wrench = (
+                        np.asarray(direct_force["wrench"], dtype=np.float64)
+                        if direct_force is not None
+                        else self._compute_force_mode_wrench(state, target_pose)
+                    )
+                    if direct_force is None and np.allclose(wrench, 0.0, atol=1e-6):
                         if self._force_mode_active:
                             _call_optional(self.rtde_c, ["forceModeStop"])
                             self._force_mode_active = False
@@ -651,32 +690,15 @@ class URStreamingController:
                         if remaining > 0:
                             time.sleep(remaining)
                         continue
-                    result = _call_optional(
+                    _call_optional(
                         self.rtde_c,
                         ["forceMode"],
-                        self.force_mode_task_frame.tolist(),
-                        self.force_mode_selection_vector.tolist(),
+                        direct_force["task_frame"] if direct_force is not None else self.force_mode_task_frame.tolist(),
+                        direct_force["selection_vector"] if direct_force is not None else self.force_mode_selection_vector.tolist(),
                         wrench.tolist(),
-                        2,
-                        self.force_mode_limits.tolist(),
+                        direct_force["type"] if direct_force is not None else 2,
+                        direct_force["limits"] if direct_force is not None else self.force_mode_limits.tolist(),
                     )
-                    if result is not True:
-                        now = time.monotonic()
-                        if now - self._force_mode_warn_time > 1.0:
-                            self._force_mode_warn_time = now
-                            self.logger.error(
-                                "forceMode_failed result=%r selection=%s wrench=%s limits=%s",
-                                result,
-                                self.force_mode_selection_vector.tolist(),
-                                np.round(wrench, 3).tolist(),
-                                self.force_mode_limits.tolist(),
-                            )
-                    elif not self._force_mode_active:
-                        self.logger.info(
-                            "force_mode_engaged selection=%s wrench=%s",
-                            self.force_mode_selection_vector.tolist(),
-                            np.round(wrench, 3).tolist(),
-                        )
                     self._force_mode_active = True
                 else:
                     target_rotvec = quat_pose_to_rotvec_pose(target_pose).tolist()
@@ -711,7 +733,6 @@ def create_app(
     default_accel: float = 1.2,
     disable_motion: bool = False,
     start_paused_until_pose: bool = False,
-    force_mode_selection=None,
     backend_factory: Optional[Callable[..., Any]] = None,
     logger_instance: Optional[logging.Logger] = None,
 ):
@@ -729,7 +750,6 @@ def create_app(
             default_accel=default_accel,
             disable_motion=disable_motion,
             start_paused_until_pose=start_paused_until_pose,
-            force_mode_selection=force_mode_selection,
             logger_instance=app_logger,
         )
     else:
@@ -977,6 +997,26 @@ def create_app(
             app_logger.exception("route_update_param failed id=%s", _request_id())
             return f"Error: {exc}", 500
 
+    @app.route("/force_mode", methods=["POST"])
+    def force_mode():
+        try:
+            result = robot_backend.set_force_mode(request.get_json(silent=True) or {})
+            return jsonify({"status": "active", **_to_jsonable(result)})
+        except (TypeError, ValueError) as exc:
+            return f"Invalid force-mode command: {exc}", 400
+        except Exception as exc:
+            app_logger.exception("route_force_mode failed id=%s", _request_id())
+            return f"Error: {exc}", 500
+
+    @app.route("/force_mode_stop", methods=["POST"])
+    def force_mode_stop():
+        try:
+            robot_backend.stop_force_mode()
+            return jsonify({"status": "stopping"})
+        except Exception as exc:
+            app_logger.exception("route_force_mode_stop failed id=%s", _request_id())
+            return f"Error: {exc}", 500
+
     return app
 
 
@@ -1003,17 +1043,6 @@ if __name__ == "__main__":
         "--start_paused_until_pose",
         action="store_true",
         help="Start the streaming controller paused, then resume after the first /pose command.",
-    )
-    parser.add_argument(
-        "--force_mode_selection",
-        nargs=6,
-        type=int,
-        default=None,
-        metavar="S",
-        help=(
-            "forceMode selection vector (forcemode only): 1 = compliant, 0 = position controlled. "
-            "Default all 1 (all 6 axes compliant). e.g. '0 0 1 0 0 0' for Z-only compliance."
-        ),
     )
     parser.add_argument("--flask_host", type=str, default="127.0.0.1")
     parser.add_argument("--flask_port", type=int, default=5000)
@@ -1068,7 +1097,6 @@ if __name__ == "__main__":
         default_accel=args.default_accel,
         disable_motion=args.disable_motion,
         start_paused_until_pose=args.start_paused_until_pose,
-        force_mode_selection=args.force_mode_selection,
         logger_instance=app_logger,
     )
     app_logger.info(

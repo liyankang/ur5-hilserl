@@ -29,10 +29,9 @@ class ImageDisplayer(threading.Thread):
         self.daemon = True  # make this a daemon thread
         self.name = name
         self.display_size = tuple(display_size)
+    def run(self):
         cv2.namedWindow(self.name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(self.name, self.display_size[0] * 3, self.display_size[1])
-
-    def run(self):
         while True:
             img_array = self.queue.get()  # retrieve an image from the queue
             if img_array is None:  # None is our signal to exit
@@ -194,7 +193,7 @@ class urEnv(gym.Env):
         self.cap = None
         self.init_cameras(self.camera_config)
         if self.display_image:
-            self.img_queue = queue.Queue()
+            self.img_queue = queue.Queue(maxsize=1)
             self.displayer = ImageDisplayer(
                 self.img_queue,
                 self.url,
@@ -333,7 +332,17 @@ class urEnv(gym.Env):
             self.recording_frames.append(full_res_images)
 
         if self.display_image:
-            self.img_queue.put(display_images)
+            try:
+                self.img_queue.put_nowait(display_images)
+            except queue.Full:
+                try:
+                    self.img_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self.img_queue.put_nowait(display_images)
+                except queue.Full:
+                    pass
         return images
 
     def interpolate_move(self, goal: np.ndarray, timeout: float):

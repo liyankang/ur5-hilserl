@@ -228,3 +228,29 @@ python record_demos.py --exp_name ram_insertion --successes_needed 40 --auto --a
 MODE=train bash run_actor.sh
 
 MODE=eval EVAL_CHECKPOINT_STEP=25000 EVAL_N_TRAJS=10 bash run_actor.sh
+
+
+
+
+
+
+
+
+
+
+
+
+
+ than the ptxas version, XLA is disabling parallel compilation, which may slow down compilation. You should update your NVIDIA driver or use the NVIDIA-provided CUDA forward compatibility packages.
+Traceback (most recent call last):
+  File "/home/serl/Desktop/ur_hilserl/examples/train_rlpd.py", line 50, in <module>
+    from experiments.mappings import CONFIG_MAPPING
+  File "/home/serl/Desktop/ur_hilserl/examples/experiments/mappings.py", line 1, in <module>
+    from experiments.ram_insertion.config import TrainConfig as RAMInsertionTrainConfig
+  File "/home/serl/Desktop/ur_hilserl/examples/experiments/ram_insertion/config.py", line 7, in <module>
+    from ur_env.envs.wrappers import (
+  File "/home/serl/Desktop/ur_hilserl/ur_env/envs/__init__.py", line 1, in <module>
+    from ur_env.envs.ur_env import urEnv, DefaultEnvConfig
+  File "/home/serl/Desktop/ur_hilserl/ur_env/envs/ur_env.py", line 198
+    self.displayer = ImageDisplayer(
+IndentationError: unexpected indent

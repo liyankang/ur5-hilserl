@@ -50,8 +50,8 @@ STATE_FIELD_SHAPES = {
         
 class EnvConfig(DefaultEnvConfig):
     # Policy actions are issued at POLICY_HZ; the interpolated robot loop runs at CONTROL_HZ.
-    POLICY_HZ = 10
-    CONTROL_HZ = 50
+    POLICY_HZ = 20
+    CONTROL_HZ = 100
     # Current UR5 RAM-insertion deployment assumes no physical gripper.
     SERVER_URL = "http://127.0.0.1:5000/"
     CAMERAS = {
@@ -90,7 +90,7 @@ class EnvConfig(DefaultEnvConfig):
     RANDOM_RESET = True
     RANDOM_XY_RANGE = 0.03
     RANDOM_RZ_RANGE = 0.0001
-    ACTION_SCALE = (0.003, 0.003, 1)
+    ACTION_SCALE = (0.01, 0.01, 1)
     ACTION_ROTATION_REPR = "rotvec"
     POSE_ROTATION_REPR = "rotvec"
     DISPLAY_IMAGE = True

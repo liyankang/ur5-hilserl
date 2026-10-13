@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEMO_DIR="/home/serl/Desktop/ur_hilserl/examples/experiments/ram_insertion/first_run/buffer"
+DEMO_DIR="/home/serl/Desktop/ur_hilserl/examples/demo_data"
 CHECKPOINT_PATH="first_run"
 
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
@@ -23,7 +23,7 @@ done
 
 python /home/serl/Desktop/ur_hilserl/examples/train_rlpd.py "$@" \
   --exp_name=ram_insertion \
-  --checkpoint_path="/home/serl/Desktop/ur_hilserl/examples/experiments/ram_insertion/first_run/checkpoint_25000" \
+  --checkpoint_path="/home/serl/Desktop/ur_hilserl/examples/experiments/ram_insertion/first_run/" \
   "${demo_args[@]}" \
   --learner \
   --debug

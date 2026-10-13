@@ -70,7 +70,7 @@ class EnvConfig(DefaultEnvConfig):
     REALSENSE_CAMERAS = CAMERAS
 
     IMAGE_CROP = {
-        "global_1": lambda img: img[47:520, 409:959],
+        "global_1": lambda img: img[79:550, 195:836],
         "wrist": lambda img: img[195:720, 358:977],
         "global_2": lambda img: img[410:656, 354:649],
 

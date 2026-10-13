@@ -87,13 +87,13 @@ class EnvConfig(DefaultEnvConfig):
     RANDOM_RESET = True
     RANDOM_XY_RANGE = 0.03
     RANDOM_RZ_RANGE = 0.03
-    ACTION_SCALE = (0.003, 0.003, 1)
+    ACTION_SCALE = (0.01, 0.01, 1)
     ACTION_ROTATION_REPR = "rotvec"
     POSE_ROTATION_REPR = "rotvec"
     DISPLAY_IMAGE = True
     GRIPPER_SLEEP = 0.0
     GRIPPER_ENABLED = False
-    MAX_EPISODE_LENGTH = 200
+    MAX_EPISODE_LENGTH = 100
     # Keep classifier integration available in code, but disabled for RAM sparse target reward mode.
     ENABLE_CLASSIFIER_REWARD = False
 
@@ -159,7 +159,7 @@ class TrainConfig(DefaultTrainingConfig):
     training_starts = 200
     actor_update_period = 2
     steps_per_update = 10
-    batch_size = 128  # 减小 batch 加速训练
+    batch_size = 64  # 减小 batch 加速训练
     encoder_type = "resnet-pretrained"
     setup_mode = "single-arm-fixed-gripper"
 

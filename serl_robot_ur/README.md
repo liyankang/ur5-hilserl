@@ -105,3 +105,6 @@ The active migrated task in this repository is `ram_insertion`.
 - `examples/experiments/mappings.py` exposes `ram_insertion`.
 - `examples/train_rlpd.py --exp_name=ram_insertion ...` is the intended real-robot path.
 - `usb_pickup_insertion` still carries Franka-specific dependencies and is not part of this UR5 migration.
+
+
+ceshi

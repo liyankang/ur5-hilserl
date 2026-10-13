@@ -195,11 +195,11 @@ class urEnv(gym.Env):
         self.init_cameras(self.camera_config)
         if self.display_image:
             self.img_queue = queue.Queue()
-                self.displayer = ImageDisplayer(
-                    self.img_queue,
-                    self.url,
-                    display_size=getattr(config, "DISPLAY_IMAGE_SIZE", (400, 400)),
-                )
+            self.displayer = ImageDisplayer(
+                self.img_queue,
+                self.url,
+                display_size=getattr(config, "DISPLAY_IMAGE_SIZE", (400, 400)),
+            )
             self.displayer.start()
 
         if set_load:

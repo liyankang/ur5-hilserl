@@ -23,11 +23,14 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ImageDisplayer(threading.Thread):
-    def __init__(self, queue, name):
+    def __init__(self, queue, name, display_size=(400, 400)):
         threading.Thread.__init__(self)
         self.queue = queue
         self.daemon = True  # make this a daemon thread
         self.name = name
+        self.display_size = tuple(display_size)
+        cv2.namedWindow(self.name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.name, self.display_size[0] * 3, self.display_size[1])
 
     def run(self):
         while True:
@@ -36,7 +39,7 @@ class ImageDisplayer(threading.Thread):
                 break
 
             frame = np.concatenate(
-                [cv2.resize(v, (128, 128)) for k, v in img_array.items() if "full" not in k], axis=1
+                [cv2.resize(v, self.display_size) for k, v in img_array.items() if "full" not in k], axis=1
             )
 
             cv2.imshow(self.name, frame)
@@ -88,6 +91,8 @@ class DefaultEnvConfig:
         "load_inertia": [0, 0, 0, 0, 0, 0, 0, 0, 0]
     }
     DISPLAY_IMAGE: bool = True
+    # Display-only size; model observations remain 128x128.
+    DISPLAY_IMAGE_SIZE = (400, 400)
     GRIPPER_SLEEP: float = 0.6
     GRIPPER_ENABLED: bool = True
     MAX_EPISODE_LENGTH: int = 100
@@ -190,7 +195,11 @@ class urEnv(gym.Env):
         self.init_cameras(self.camera_config)
         if self.display_image:
             self.img_queue = queue.Queue()
-            self.displayer = ImageDisplayer(self.img_queue, self.url)
+                self.displayer = ImageDisplayer(
+                    self.img_queue,
+                    self.url,
+                    display_size=getattr(config, "DISPLAY_IMAGE_SIZE", (400, 400)),
+                )
             self.displayer.start()
 
         if set_load:

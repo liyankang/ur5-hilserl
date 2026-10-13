@@ -49,6 +49,9 @@ STATE_FIELD_SHAPES = {
 }
         
 class EnvConfig(DefaultEnvConfig):
+    # Policy actions are issued at POLICY_HZ; the interpolated robot loop runs at CONTROL_HZ.
+    POLICY_HZ = 10
+    CONTROL_HZ = 50
     # Current UR5 RAM-insertion deployment assumes no physical gripper.
     SERVER_URL = "http://127.0.0.1:5000/"
     CAMERAS = {
@@ -82,12 +85,17 @@ class EnvConfig(DefaultEnvConfig):
     REWARD_THRESHOLD = np.array([0.005, 0.005, 0.005, 0.02, 0.02, 0.02], dtype=np.float64)
     RESET_POSE = TARGET_POSE + np.array([0, 0, 0.1, 0, 0, 0])
     # Keep translation bounds tight, no rotation allowed.
-    ABS_POSE_LIMIT_LOW = TARGET_POSE - np.array([0.05, 0.05, 0.02, 0, 0, 0.2])
-    ABS_POSE_LIMIT_HIGH = TARGET_POSE + np.array([0.05, 0.05, 0.15, 0, 0, 0.2])
+    ABS_POSE_LIMIT_LOW = TARGET_POSE - np.array([0.05, 0.05, 0.02, 0.01, 0.01, 0.01])
+    ABS_POSE_LIMIT_HIGH = TARGET_POSE + np.array([0.05, 0.05, 0.15, 0.01, 0.01, 0.01])
     RANDOM_RESET = True
     RANDOM_XY_RANGE = 0.03
+<<<<<<< HEAD
     RANDOM_RZ_RANGE = 0.03
     ACTION_SCALE = (0.01, 0.01, 1)
+=======
+    RANDOM_RZ_RANGE = 0.0001
+    ACTION_SCALE = (0.003, 0.003, 1)
+>>>>>>> 1bae9297caf02af557ef7c3beddaec79f4d7c374
     ACTION_ROTATION_REPR = "rotvec"
     POSE_ROTATION_REPR = "rotvec"
     DISPLAY_IMAGE = True
@@ -165,6 +173,7 @@ class TrainConfig(DefaultTrainingConfig):
 
     def get_environment(self, fake_env=False, save_video=False, classifier=False):
         env = RAMEnv(
+            hz=EnvConfig.CONTROL_HZ,
             fake_env=fake_env,
             save_video=save_video,
             config=EnvConfig(),
@@ -178,7 +187,11 @@ class TrainConfig(DefaultTrainingConfig):
         env = SERLObsWrapper(env, proprio_keys=self.proprio_keys)
         env = ChunkingWrapper(env, obs_horizon=1, act_exec_horizon=None)
         # Apply action interpolation to smooth motion between policy steps
-        env = ActionInterpolationWrapper(env, policy_freq=10, control_freq=50)
+        env = ActionInterpolationWrapper(
+            env,
+            policy_freq=EnvConfig.POLICY_HZ,
+            control_freq=EnvConfig.CONTROL_HZ,
+        )
         if classifier and EnvConfig.ENABLE_CLASSIFIER_REWARD:
             classifier = load_classifier_func(
                 key=jax.random.PRNGKey(0),

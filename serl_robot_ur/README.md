@@ -60,6 +60,8 @@ environments continue to work.
 | `set_load` | Franka-compatible payload route, translated to UR payload where possible |
 | `set_payload` | Alias of `set_load` |
 | `update_param` | Compatibility route for compliance parameters; unsupported keys are ignored |
+| `force_mode` | Apply a bounded TCP wrench for up to 2 seconds (requires `--controller_mode=forcemode`) |
+| `force_mode_stop` | Cancel a direct force command and stop force mode |
 | `clearerr` | Best-effort RTDE stop / script reset |
 | `activate_gripper` | No-op compatibility endpoint in the current no-gripper setup |
 | `reset_gripper` | No-op compatibility endpoint in the current no-gripper setup |
@@ -77,7 +79,17 @@ curl -X POST http://127.0.0.1:5000/jointreset
 curl -X POST http://127.0.0.1:5000/pose \
   -H 'Content-Type: application/json' \
   -d '{"arr": [0.5, -0.1, 0.2, 0.0, 0.0, 0.0, 1.0]}'
+curl -X POST http://127.0.0.1:5000/force_mode \
+  -H 'Content-Type: application/json' \
+  -d '{"wrench": [0, 0, 3, 0, 0, 0], "selection_vector": [0, 0, 1, 0, 0, 0], "duration": 0.5}'
+curl -X POST http://127.0.0.1:5000/force_mode_stop
 ```
+
+`wrench` is `[Fx, Fy, Fz, Tx, Ty, Tz]` in N and Nm. The default task frame is
+the base frame; `selection_vector` uses one to enable a force-controlled axis.
+Limits are capped at 20 N / 5 Nm and 0.1 m/s / 0.5 rad/s, and each command
+expires automatically after at most 2 seconds. Test with low forces and a clear
+workspace before using a real robot.
 
 ## Task Scope
 

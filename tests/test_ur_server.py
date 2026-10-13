@@ -24,6 +24,8 @@ class FakeArmBackend:
         self.joint_reset_targets = []
         self.updated_params = []
         self.payloads = []
+        self.force_commands = []
+        self.force_stop_calls = 0
         self.clear_calls = 0
         self.closed = False
 
@@ -84,6 +86,13 @@ class FakeArmBackend:
     def clear_error(self):
         self.clear_calls += 1
         return "Cleared"
+
+    def set_force_mode(self, command):
+        self.force_commands.append(dict(command))
+        return dict(command)
+
+    def stop_force_mode(self):
+        self.force_stop_calls += 1
 
 
 class URArmControlRoutesTest(unittest.TestCase):
@@ -156,6 +165,17 @@ class URArmControlRoutesTest(unittest.TestCase):
         self.assertAlmostEqual(target_pose[1], -0.15)
         self.assertAlmostEqual(target_pose[2], 0.25)
         self.assertAlmostEqual(sum(x * x for x in target_pose[3:]) ** 0.5, 1.0, places=6)
+
+    def test_force_mode_routes_start_and_stop_direct_force_control(self):
+        command = {"wrench": [0, 0, 3, 0, 0, 0], "selection_vector": [0, 0, 1, 0, 0, 0]}
+        response = self.client.post("/force_mode", json=command)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.backend.force_commands, [command])
+        self.assertEqual(response.get_json()["status"], "active")
+
+        stop_response = self.client.post("/force_mode_stop")
+        self.assertEqual(stop_response.status_code, 200)
+        self.assertEqual(self.backend.force_stop_calls, 1)
 
 
 if __name__ == "__main__":

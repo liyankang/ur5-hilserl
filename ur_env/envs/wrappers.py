@@ -626,9 +626,10 @@ class KeyBoardIntervention(gym.ActionWrapper):
             base_env._update_currpos()
             current_xyz = base_env.currpos[:3]
             current_quat = base_env.currpos[3:7]  # xyzw
+            
             target_xyz = base_env._TARGET_POSE[:3]
             target_rotvec = base_env._TARGET_POSE[3:6]
-
+            print("go-to-target", current_xyz, target_xyz)
             # Position error in base frame.
             pos_err_base = target_xyz - current_xyz
             current_rot = Rot.from_quat(current_quat).as_matrix()

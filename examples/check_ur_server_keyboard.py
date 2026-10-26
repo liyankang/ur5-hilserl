@@ -141,12 +141,6 @@ def run_server_checks(base_url: str) -> list[ServerCheckResult]:
         results.append(ServerCheckResult(False, f"/pose failed with current pose: {exc}"))
 
     try:
-        post_json(base_url, "/update_param", {"translational_stiffness": 2000, "translational_damping": 89})
-        results.append(ServerCheckResult(True, "/update_param reachable"))
-    except Exception as exc:
-        results.append(ServerCheckResult(False, f"/update_param failed: {exc}"))
-
-    try:
         post_json(base_url, "/jointreset")
         results.append(ServerCheckResult(True, "/jointreset reachable"))
     except Exception as exc:

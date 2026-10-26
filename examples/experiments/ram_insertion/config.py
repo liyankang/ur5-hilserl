@@ -102,52 +102,6 @@ class EnvConfig(DefaultEnvConfig):
     ENABLE_CLASSIFIER_REWARD = False
 
     RESET_INTERPOLATE_TIMEOUT =2.0
-    # 空载（无法兰夹具）
-    # 安装夹具后，请用秤称质量，并运行 height.py 标定重心，然后更新以下参数：
-    # 解释：合规性参数，用于控制机器人在执行任务时的合规性
-    COMPLIANCE_PARAM = {
-        "translational_stiffness": 2000,
-        "translational_damping": 89,
-        "rotational_stiffness": 150,
-        "rotational_damping": 7,
-        "translational_Ki": 0,
-        "translational_clip_x": 0.0075,
-        "translational_clip_y": 0.0016,
-        "translational_clip_z": 0.012,
-        "translational_clip_neg_x": 0.002,
-        "translational_clip_neg_y": 0.0016,
-        "translational_clip_neg_z": 0.012,
-        "rotational_clip_x": 0.01,
-        "rotational_clip_y": 0.025,
-        "rotational_clip_z": 0.005,
-        "rotational_clip_neg_x": 0.01,
-        "rotational_clip_neg_y": 0.025,
-        "rotational_clip_neg_z": 0.005,
-        "rotational_Ki": 0,
-    }
-    #解释：精度参数，用于控制机器人在执行任务时的精度和稳定性
-    PRECISION_PARAM = {
-        "translational_stiffness": 1200,
-        "translational_damping": 89,
-        "rotational_stiffness": 100,
-        "rotational_damping": 9,
-        "translational_Ki": 0.0,
-        "translational_clip_x": 0.1,
-        "translational_clip_y": 0.1,
-        "translational_clip_z": 0.1,
-        "translational_clip_neg_x": 0.1,
-        "translational_clip_neg_y": 0.1,
-        "translational_clip_neg_z": 0.1,
-        "rotational_clip_x": 0.5,
-        "rotational_clip_y": 0.5,
-        "rotational_clip_z": 0.5,
-        "rotational_clip_neg_x": 0.5,
-        "rotational_clip_neg_y": 0.5,
-        "rotational_clip_neg_z": 0.5,
-        "rotational_Ki": 0.0,
-    }
-
-
 class TrainConfig(DefaultTrainingConfig):
     image_keys = ["global_1", "wrist", "global_2"]
     classifier_keys = ["wrist", "global_2"]

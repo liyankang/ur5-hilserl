@@ -23,7 +23,6 @@ def _call_optional(target, method_names, *args, **kwargs):
 
 def stop_servo(rtde_c):
     """停止所有伺服控制（原始逻辑）"""
-    # 注意：原始类中可能还有 forceModeStop 等，这里只做最简
     _call_optional(rtde_c, ["servoStop"])
     _call_optional(rtde_c, ["stopL"])
     _call_optional(rtde_c, ["speedStop"])

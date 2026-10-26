@@ -6,8 +6,8 @@ This package keeps the original SERL runtime split:
 - The Gym environment talks to a Flask server over HTTP.
 - The Flask server talks to the real UR5 controller over RTDE.
 
-The old Franka ROS stack is still present in the repository for reference, but
-the active UR5 path no longer depends on ROS.
+The runtime targets the UR5 RTDE interface directly and does not depend on the
+old Franka ROS stack.
 
 ## Runtime Topology
 
@@ -25,7 +25,7 @@ the active UR5 path no longer depends on ROS.
 cd serl_robot_ur/robot_servers
 python ur_server.py \
     --robot_ip=<ur5_ip> \
-    --controller_mode=forcemode \
+    --controller_mode=servo \
     --flask_host=0.0.0.0 \
     --flask_port=5000 \
     --reset_joint_target <q1> <q2> <q3> <q4> <q5> <q6>
@@ -50,8 +50,8 @@ environments continue to work.
 | `getpos` | Current end-effector pose in `xyz + quat` |
 | `getpos_euler` | Current end-effector pose in `xyz + euler xyz` |
 | `getvel` | Current TCP velocity |
-| `getforce` | Current TCP force |
-| `gettorque` | Current TCP torque |
+| `getforce` | Read-only current TCP force measurement |
+| `gettorque` | Read-only current TCP torque measurement |
 | `getq` | Current joint positions |
 | `getdq` | Current joint velocities |
 | `getjacobian` | Current Jacobian if available, otherwise zeros |
@@ -59,9 +59,6 @@ environments continue to work.
 | `jointreset` | Move to the configured 6-DOF reset joint target |
 | `set_load` | Franka-compatible payload route, translated to UR payload where possible |
 | `set_payload` | Alias of `set_load` |
-| `update_param` | Compatibility route for compliance parameters; unsupported keys are ignored |
-| `force_mode` | Apply a bounded TCP wrench for up to 2 seconds (requires `--controller_mode=forcemode`) |
-| `force_mode_stop` | Cancel a direct force command and stop force mode |
 | `clearerr` | Best-effort RTDE stop / script reset |
 | `activate_gripper` | No-op compatibility endpoint in the current no-gripper setup |
 | `reset_gripper` | No-op compatibility endpoint in the current no-gripper setup |
@@ -79,32 +76,18 @@ curl -X POST http://127.0.0.1:5000/jointreset
 curl -X POST http://127.0.0.1:5000/pose \
   -H 'Content-Type: application/json' \
   -d '{"arr": [0.5, -0.1, 0.2, 0.0, 0.0, 0.0, 1.0]}'
-curl -X POST http://127.0.0.1:5000/force_mode \
-  -H 'Content-Type: application/json' \
-  -d '{"wrench": [0, 0, 3, 0, 0, 0], "selection_vector": [0, 0, 1, 0, 0, 0], "duration": 0.5}'
-curl -X POST http://127.0.0.1:5000/force_mode_stop
 ```
-
-`wrench` is `[Fx, Fy, Fz, Tx, Ty, Tz]` in N and Nm. The default task frame is
-the base frame; `selection_vector` uses one to enable a force-controlled axis.
-Limits are capped at 20 N / 5 Nm and 0.1 m/s / 0.5 rad/s, and each command
-expires automatically after at most 2 seconds. Test with low forces and a clear
-workspace before using a real robot.
 
 ## Task Scope
 
-`ur_server.py` now supports two control backends:
-
-- `--controller_mode=forcemode`: impedance-like `forceMode` tracking, closer to the old Franka compliance behavior
-- `--controller_mode=servo`: streamed pose servoing with `servoL`
-
-The launch scripts default to `forcemode`.
+`ur_server.py` uses streamed Cartesian pose servoing with `servoL`. The TCP
+force/torque values exposed by `getstate` are read-only observations; they are
+not used as motion commands.
 
 The active migrated task in this repository is `ram_insertion`.
 
 - `examples/experiments/mappings.py` exposes `ram_insertion`.
 - `examples/train_rlpd.py --exp_name=ram_insertion ...` is the intended real-robot path.
-- `usb_pickup_insertion` still carries Franka-specific dependencies and is not part of this UR5 migration.
 
 
 ceshi

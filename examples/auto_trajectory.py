@@ -73,10 +73,6 @@ def auto_move_to_target(env, target_pose, speed_mm=2.0, interrupt_check=None):
     distance = np.linalg.norm(target_pose[:3] - start_pos[:3])
     num_steps = max(int(distance / (speed_mm / 1000.0)), 10)
 
-    # Use precision mode for accurate movement
-    base_env._post_debug("update_param", payload=base_env.config.PRECISION_PARAM)
-    time.sleep(0.3)
-
     path = np.linspace(start_pos, target_quat, num_steps)
     transitions = []
 

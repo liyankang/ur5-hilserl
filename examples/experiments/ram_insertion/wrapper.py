@@ -46,14 +46,11 @@ class RAMEnv(urEnv):
         Move to the rest position defined in base class.
         Add a small z offset before going to rest to avoid collision with object.
         """        
-        # use compliance mode for coupled reset
         self._update_currpos()
         LOGGER.info("[RAMEnv] go_to_reset start %s", _fmt_pose("currpos", self.currpos))
 
         self._send_pos_command(self.currpos, source="reset")
         time.sleep(0.3)
-        self._post_debug("update_param", payload=self.config.PRECISION_PARAM)
-
         reset_timeout = float(getattr(self.config, "RESET_INTERPOLATE_TIMEOUT", 2.5))
 
         # pull up
@@ -93,21 +90,14 @@ class RAMEnv(urEnv):
             self.interpolate_move(reset_pose, timeout=reset_timeout)
         time.sleep(0.5)
 
-        # Change to compliance mode
-        self._post_debug("update_param", payload=self.config.COMPLIANCE_PARAM)
-
-
     def regrasp(self):
         if not self.config.GRIPPER_ENABLED:
             LOGGER.warning("Regrasp skipped: gripper is disabled for this UR5 setup.")
             return
 
-        # use compliance mode for coupled reset
         self._update_currpos()
         self._send_pos_command(self.currpos, source="reset")
         time.sleep(0.3)
-        requests.post(self.url + "update_param", json=self.config.PRECISION_PARAM)
-
         # pull up
         self._update_currpos()
         reset_pose = copy.deepcopy(self.currpos)
@@ -157,7 +147,6 @@ class RAMEnv(urEnv):
 
         self._update_currpos()
         obs = self._get_obs()
-        self._post_debug("update_param", payload=self.config.COMPLIANCE_PARAM)
         self.terminate = False
         return obs, {}
 

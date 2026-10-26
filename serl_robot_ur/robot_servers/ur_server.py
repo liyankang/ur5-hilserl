@@ -20,7 +20,6 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 from flask import Flask, g, jsonify, request
-from scipy.spatial.transform import Rotation as R
 
 try:
     import rtde_control
@@ -192,13 +191,13 @@ class DummyGripperServer:
 
 
 class URStreamingController:
-    """Background RTDE controller with servo and forceMode backends."""
+    """Background RTDE controller for streamed Cartesian servoing."""
 
     def __init__(
         self,
         robot_ip: str,
         reset_joint_target,
-        controller_mode: str = "forcemode",
+        controller_mode: str = "servo",
         control_hz: float = 20.0,
         default_speed: float = 0.2,
         default_accel: float = 0.2,
@@ -219,36 +218,19 @@ class URStreamingController:
 
         self.robot_ip = robot_ip
         self.logger = logger_instance or logging.getLogger(LOGGER_NAME)
-        self.controller_mode = controller_mode
-        self.control_hz = 100.0 if controller_mode == "forcemode" else control_hz
+        if controller_mode != "servo":
+            raise ValueError("Only controller_mode='servo' is supported")
+        self.controller_mode = "servo"
+        self.control_hz = control_hz
         self.default_speed = default_speed
         self.default_accel = default_accel
         self.disable_motion = disable_motion
         self.start_paused_until_pose = start_paused_until_pose
         self.servo_gain = 300
         self.lookahead_time = 0.1
-        self.translational_stiffness = 2000.0
-        self.translational_damping = 89.0
-        self.rotational_stiffness = 150.0
-        self.rotational_damping = 7.0
-        self.translational_clip = np.array([0.01, 0.01, 0.01], dtype=np.float64)
-        self.translational_clip_neg = np.array([0.01, 0.01, 0.01], dtype=np.float64)
-        self.rotational_clip = np.array([0.05, 0.05, 0.05], dtype=np.float64)
-        self.rotational_clip_neg = np.array([0.05, 0.05, 0.05], dtype=np.float64)
-        self.force_mode_damping = 0.05
-        self.force_mode_task_frame = np.zeros((6,), dtype=np.float64)
-        self.force_mode_selection_vector = np.ones((6,), dtype=np.int32)
-        self.force_mode_limits = np.array([2.0, 2.0, 2.0, 1.5, 1.5, 1.5], dtype=np.float64)
-        self.force_mode_idle_timeout = 0.2
-        self.force_mode_pos_deadband = np.array([5e-4, 5e-4, 5e-4], dtype=np.float64)
-        self.force_mode_rot_deadband = np.array([5e-3, 5e-3, 5e-3], dtype=np.float64)
-        self.force_mode_vel_deadband = np.array([5e-3, 5e-3, 5e-3, 1e-2, 1e-2, 1e-2], dtype=np.float64)
         self.pose_filter_alpha = 0.2
         self.vel_filter_alpha = 0.1
         self.force_filter_alpha = 0.1
-        self.last_policy_target_time = 0.0
-        self._force_mode_active = False
-        self._direct_force_command = None
         self._filtered_pose_rtde = None
         self._filtered_vel_rtde = None
         self._filtered_force_rtde = None
@@ -287,78 +269,6 @@ class URStreamingController:
         _call_optional(self.rtde_r, ["disconnect"])
         self.logger.info("controller_closed")
 
-    def update_param(self, params: dict[str, Any]) -> dict[str, Any]:
-        params = dict(params or {})
-        applied = {}
-        consumed_keys = set()
-
-        translational_stiffness = params.get("translational_stiffness")
-        if translational_stiffness is not None:
-            stiffness = float(np.clip(float(translational_stiffness), 100.0, 2000.0))
-            self.servo_gain = int(stiffness)
-            self.translational_stiffness = stiffness
-            applied["translational_stiffness"] = stiffness
-            consumed_keys.add("translational_stiffness")
-
-        translational_damping = params.get("translational_damping")
-        if translational_damping is not None:
-            damping = float(translational_damping)
-            self.translational_damping = damping
-            if self.controller_mode == "servo":
-                self.lookahead_time = float(np.clip(damping / 1000.0, 0.03, 0.2))
-            applied["translational_damping"] = damping
-            consumed_keys.add("translational_damping")
-
-        rotational_stiffness = params.get("rotational_stiffness")
-        if rotational_stiffness is not None:
-            rotational_stiffness = float(rotational_stiffness)
-            self.rotational_stiffness = rotational_stiffness
-            applied["rotational_stiffness"] = rotational_stiffness
-            consumed_keys.add("rotational_stiffness")
-
-        rotational_damping = params.get("rotational_damping")
-        if rotational_damping is not None:
-            rotational_damping = float(rotational_damping)
-            self.rotational_damping = rotational_damping
-            applied["rotational_damping"] = rotational_damping
-            consumed_keys.add("rotational_damping")
-
-        translational_clip, translational_clip_neg, translational_clip_keys = self._update_axis_clip_params(
-            params,
-            "translational",
-            self.translational_clip,
-            self.translational_clip_neg,
-        )
-        if translational_clip is not None:
-            self.translational_clip = translational_clip
-            self.translational_clip_neg = translational_clip_neg
-            applied["translational_clip"] = translational_clip.tolist()
-            applied["translational_clip_neg"] = translational_clip_neg.tolist()
-        consumed_keys.update(translational_clip_keys)
-
-        rotational_clip, rotational_clip_neg, rotational_clip_keys = self._update_axis_clip_params(
-            params,
-            "rotational",
-            self.rotational_clip,
-            self.rotational_clip_neg,
-        )
-        if rotational_clip is not None:
-            self.rotational_clip = rotational_clip
-            self.rotational_clip_neg = rotational_clip_neg
-            applied["rotational_clip"] = rotational_clip.tolist()
-            applied["rotational_clip_neg"] = rotational_clip_neg.tolist()
-        consumed_keys.update(rotational_clip_keys)
-
-        if "force_mode_damping" in params:
-            self.force_mode_damping = float(np.clip(float(params["force_mode_damping"]), 0.0, 1.0))
-            if self.controller_mode == "forcemode":
-                _call_optional(self.rtde_c, ["forceModeSetDamping"], self.force_mode_damping)
-            applied["force_mode_damping"] = self.force_mode_damping
-            consumed_keys.add("force_mode_damping")
-
-        ignored = sorted([key for key in params if key not in consumed_keys])
-        return {"applied": applied, "ignored": ignored}
-
     def set_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         payload = dict(payload or {})
         mass = float(payload.get("mass", 0.0))
@@ -374,8 +284,6 @@ class URStreamingController:
     def clear_error(self) -> str:
         self.logger.info("clear_error requested")
         self.stop_servo()
-        if self.controller_mode == "forcemode":
-            _call_optional(self.rtde_c, ["zeroFtSensor"])
         if _call_optional(self.rtde_c, ["reuploadScript"]) is not None:
             return "Cleared and reuploaded RTDE script"
         return "Cleared (best effort)"
@@ -393,73 +301,16 @@ class URStreamingController:
             _optional_or_default(accel, self.target_accel),
         )
         with self._lock:
-            self._direct_force_command = None
             self.target_pose = pose
             if speed is not None:
                 self.target_speed = float(speed)
             if accel is not None:
                 self.target_accel = float(accel)
-            if source == "policy":
-                self.last_policy_target_time = time.monotonic()
             if self._servo_paused and self.start_paused_until_pose and source == "policy":
                 self._servo_paused = False
                 self.start_paused_until_pose = False
                 self.logger.info("motion_resumed_after_first_pose")
             return self.target_pose.copy()
-
-    def set_force_mode(self, command: dict[str, Any]) -> dict[str, Any]:
-        if self.controller_mode != "forcemode":
-            raise ValueError("Direct force control requires --controller_mode=forcemode")
-        command = dict(command or {})
-
-        def vector(name, default=None):
-            value = command.get(name, default)
-            if value is None:
-                raise ValueError(f"Missing '{name}'")
-            result = np.asarray(value, dtype=np.float64).reshape(-1)
-            if result.size != 6 or not np.all(np.isfinite(result)):
-                raise ValueError(f"'{name}' must contain 6 finite numbers")
-            return result
-
-        selection = vector("selection_vector", [1, 1, 1, 1, 1, 1])
-        if not np.all(np.isin(selection, [0, 1])) or not np.any(selection):
-            raise ValueError("'selection_vector' must select at least one axis using only 0 or 1")
-        wrench = vector("wrench")
-        if np.any(np.abs(wrench[:3]) > 20.0) or np.any(np.abs(wrench[3:]) > 5.0):
-            raise ValueError("Wrench is limited to 20 N per force axis and 5 Nm per torque axis")
-        task_frame = vector("task_frame", [0.0] * 6)
-        limits = vector("limits", [0.05, 0.05, 0.05, 0.2, 0.2, 0.2])
-        if np.any(limits <= 0.0) or np.any(limits[:3] > 0.1) or np.any(limits[3:] > 0.5):
-            raise ValueError("'limits' must be positive and no greater than 0.1 m/s or 0.5 rad/s per axis")
-        mode = command.get("type", 2)
-        if isinstance(mode, bool) or mode not in (1, 2):
-            raise ValueError("'type' must be 1 or 2")
-        duration = float(command.get("duration", 1.0))
-        if not np.isfinite(duration) or not 0.0 < duration <= 2.0:
-            raise ValueError("'duration' must be greater than 0 and no greater than 2 seconds")
-
-        stored = {
-            "task_frame": task_frame.tolist(),
-            "selection_vector": selection.astype(np.int32).tolist(),
-            "wrench": wrench.tolist(),
-            "type": int(mode),
-            "limits": limits.tolist(),
-            "expires_at": time.monotonic() + duration,
-        }
-        with self._lock:
-            self._direct_force_command = stored
-            self.last_policy_target_time = time.monotonic()
-        self.logger.info(
-            "direct_force_mode_started selection=%s wrench=%s duration=%.2f",
-            stored["selection_vector"], stored["wrench"], duration,
-        )
-        return {key: value for key, value in stored.items() if key != "expires_at"}
-
-    def stop_force_mode(self) -> None:
-        with self._lock:
-            self._direct_force_command = None
-            self.last_policy_target_time = 0.0
-        self.logger.info("direct_force_mode_stopped")
 
     def move_joints(self, q, speed=None, accel=None) -> np.ndarray:
         q = np.asarray(q, dtype=np.float64).reshape(-1)
@@ -584,57 +435,12 @@ class URStreamingController:
         return state
 
     def stop_servo(self):
-        if self.controller_mode == "forcemode":
-            _call_optional(self.rtde_c, ["forceModeStop"])
-            self._force_mode_active = False
         _call_optional(self.rtde_c, ["servoStop"])
         _call_optional(self.rtde_c, ["stopL"])
         _call_optional(self.rtde_c, ["speedStop"])
 
-    def _update_axis_clip_params(self, params, prefix, current_pos, current_neg):
-        updated = False
-        new_pos = np.array(current_pos, dtype=np.float64)
-        new_neg = np.array(current_neg, dtype=np.float64)
-        consumed_keys = set()
-        for index, axis in enumerate("xyz"):
-            pos_key = f"{prefix}_clip_{axis}"
-            neg_key = f"{prefix}_clip_neg_{axis}"
-            if pos_key in params:
-                new_pos[index] = abs(float(params[pos_key]))
-                updated = True
-                consumed_keys.add(pos_key)
-            if neg_key in params:
-                new_neg[index] = abs(float(params[neg_key]))
-                updated = True
-                consumed_keys.add(neg_key)
-        if not updated:
-            return None, None, consumed_keys
-        return new_pos, new_neg, consumed_keys
-
-    def _compute_force_mode_wrench(self, state: dict[str, Any], target_pose: np.ndarray) -> np.ndarray:
-        curr_pose = np.asarray(state["pose"], dtype=np.float64)
-        curr_vel = np.asarray(state["vel"], dtype=np.float64)
-        pos_error = target_pose[:3] - curr_pose[:3]
-        pos_error = np.where(np.abs(pos_error) < self.force_mode_pos_deadband, 0.0, pos_error)
-        pos_error = np.clip(
-            pos_error,
-            -self.translational_clip_neg,
-            self.translational_clip,
-        )
-        vel = np.where(np.abs(curr_vel) < self.force_mode_vel_deadband, 0.0, curr_vel)
-        force = self.translational_stiffness * pos_error - self.translational_damping * vel[:3]
-
-        rot_error = (R.from_quat(target_pose[3:]) * R.from_quat(curr_pose[3:]).inv()).as_rotvec()
-        rot_error = np.where(np.abs(rot_error) < self.force_mode_rot_deadband, 0.0, rot_error)
-        rot_error = np.clip(rot_error, -self.rotational_clip_neg, self.rotational_clip)
-        torque = self.rotational_stiffness * rot_error - self.rotational_damping * vel[3:]
-        return np.concatenate([force, torque]).astype(np.float64)
-
     def _run(self):
         dt = 1.0 / self.control_hz
-        if self.controller_mode == "forcemode":
-            _call_optional(self.rtde_c, ["forceModeSetDamping"], self.force_mode_damping)
-            _call_optional(self.rtde_c, ["zeroFtSensor"])
         while not self._stop_event.is_set():
             if self.disable_motion:
                 # Dry-run mode for debugging command generation without moving the robot.
@@ -650,70 +456,22 @@ class URStreamingController:
                 target_pose = self.target_pose.copy()
                 speed = self.target_speed
                 accel = self.target_accel
-                direct_force = self._direct_force_command
 
-            state = self.get_state()
             with self._motion_lock:
                 period = _call_optional(self.rtde_c, ["initPeriod"])
-                if self.controller_mode == "forcemode":
-                    if direct_force is not None and time.monotonic() >= direct_force["expires_at"]:
-                        with self._lock:
-                            if self._direct_force_command is direct_force:
-                                self._direct_force_command = None
-                                self.last_policy_target_time = 0.0
-                        direct_force = None
-                    policy_is_fresh = direct_force is not None or (
-                        (time.monotonic() - self.last_policy_target_time) <= self.force_mode_idle_timeout
-                    )
-                    if not policy_is_fresh:
-                        if self._force_mode_active:
-                            _call_optional(self.rtde_c, ["forceModeStop"])
-                            self._force_mode_active = False
-                        if period is not None:
-                            _call_optional(self.rtde_c, ["waitPeriod"], period)
-                        remaining = dt - (time.monotonic() - cycle_start)
-                        if remaining > 0:
-                            time.sleep(remaining)
-                        continue
-                    wrench = (
-                        np.asarray(direct_force["wrench"], dtype=np.float64)
-                        if direct_force is not None
-                        else self._compute_force_mode_wrench(state, target_pose)
-                    )
-                    if direct_force is None and np.allclose(wrench, 0.0, atol=1e-6):
-                        if self._force_mode_active:
-                            _call_optional(self.rtde_c, ["forceModeStop"])
-                            self._force_mode_active = False
-                        if period is not None:
-                            _call_optional(self.rtde_c, ["waitPeriod"], period)
-                        remaining = dt - (time.monotonic() - cycle_start)
-                        if remaining > 0:
-                            time.sleep(remaining)
-                        continue
-                    _call_optional(
-                        self.rtde_c,
-                        ["forceMode"],
-                        direct_force["task_frame"] if direct_force is not None else self.force_mode_task_frame.tolist(),
-                        direct_force["selection_vector"] if direct_force is not None else self.force_mode_selection_vector.tolist(),
-                        wrench.tolist(),
-                        direct_force["type"] if direct_force is not None else 2,
-                        direct_force["limits"] if direct_force is not None else self.force_mode_limits.tolist(),
-                    )
-                    self._force_mode_active = True
-                else:
-                    target_rotvec = quat_pose_to_rotvec_pose(target_pose).tolist()
-                    servo_result = _call_optional(
-                        self.rtde_c,
-                        ["servoL"],
-                        target_rotvec,
-                        speed,
-                        accel,
-                        dt,
-                        self.lookahead_time,
-                        self.servo_gain,
-                    )
-                    if servo_result is None:
-                        _call_optional(self.rtde_c, ["moveL"], target_rotvec, speed, accel)
+                target_rotvec = quat_pose_to_rotvec_pose(target_pose).tolist()
+                servo_result = _call_optional(
+                    self.rtde_c,
+                    ["servoL"],
+                    target_rotvec,
+                    speed,
+                    accel,
+                    dt,
+                    self.lookahead_time,
+                    self.servo_gain,
+                )
+                if servo_result is None:
+                    _call_optional(self.rtde_c, ["moveL"], target_rotvec, speed, accel)
                 if period is not None:
                     _call_optional(self.rtde_c, ["waitPeriod"], period)
 
@@ -727,7 +485,7 @@ def create_app(
     gripper_type=None,
     gripper_ip=None,
     reset_joint_target=None,
-    controller_mode: str = "forcemode",
+    controller_mode: str = "servo",
     control_hz: float = 20.0,
     default_speed: float = 0.6,
     default_accel: float = 1.2,
@@ -988,35 +746,6 @@ def create_app(
             app_logger.exception("route_clearerr failed id=%s", _request_id())
             return f"Error: {exc}", 500
 
-    @app.route("/update_param", methods=["POST"])
-    def update_param():
-        try:
-            result = robot_backend.update_param(request.get_json(silent=True) or {})
-            return jsonify(_to_jsonable(result))
-        except Exception as exc:
-            app_logger.exception("route_update_param failed id=%s", _request_id())
-            return f"Error: {exc}", 500
-
-    @app.route("/force_mode", methods=["POST"])
-    def force_mode():
-        try:
-            result = robot_backend.set_force_mode(request.get_json(silent=True) or {})
-            return jsonify({"status": "active", **_to_jsonable(result)})
-        except (TypeError, ValueError) as exc:
-            return f"Invalid force-mode command: {exc}", 400
-        except Exception as exc:
-            app_logger.exception("route_force_mode failed id=%s", _request_id())
-            return f"Error: {exc}", 500
-
-    @app.route("/force_mode_stop", methods=["POST"])
-    def force_mode_stop():
-        try:
-            robot_backend.stop_force_mode()
-            return jsonify({"status": "stopping"})
-        except Exception as exc:
-            app_logger.exception("route_force_mode_stop failed id=%s", _request_id())
-            return f"Error: {exc}", 500
-
     return app
 
 
@@ -1027,11 +756,16 @@ if __name__ == "__main__":
     parser.add_argument("--gripper_type", type=str, default="None", help="Gripper type or None")
     parser.add_argument(
         "--controller_mode",
-        choices=["forcemode", "servo"],
-        default="forcemode",
-        help="Control backend: forceMode for impedance-like control, or servo for streamed pose servoing.",
+        choices=["servo"],
+        default="servo",
+        help="Cartesian pose-servo backend.",
     )
-    parser.add_argument("--control_hz", type=float, default=20.0, help="Base control loop frequency for servo mode.")
+    parser.add_argument(
+        "--control_hz",
+        type=float,
+        default=50.0,
+        help="Cartesian servo control frequency.",
+    )
     parser.add_argument("--default_speed", type=float, default=0.6, help="Default Cartesian/servo speed.")
     parser.add_argument("--default_accel", type=float, default=1.2, help="Default Cartesian/servo acceleration.")
     parser.add_argument(

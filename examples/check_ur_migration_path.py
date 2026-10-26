@@ -78,9 +78,6 @@ class FakeBackend:
             "gripper_pos": [0.0],
         }
 
-    def update_param(self, params):
-        return {"applied": dict(params), "ignored": []}
-
     def set_payload(self, payload):
         return {"applied": True, "payload": dict(payload)}
 
@@ -237,14 +234,12 @@ def check_ur_server_routes(findings: list[Finding]) -> None:
     pose_response = client.post("/pose", json={"arr": [0.5, -0.1, 0.2, 0.0, 0.0, 0.0, 1.0]})
     state_response = client.post("/getstate")
     reset_response = client.post("/jointreset")
-    update_response = client.post("/update_param", json={"translational_stiffness": 2000})
     clear_response = client.post("/clearerr")
 
     route_responses = {
         "/pose": pose_response.status_code,
         "/getstate": state_response.status_code,
         "/jointreset": reset_response.status_code,
-        "/update_param": update_response.status_code,
         "/clearerr": clear_response.status_code,
     }
     bad_routes = [route for route, code in route_responses.items() if code != 200]
@@ -300,18 +295,6 @@ def check_known_migration_risks(findings: list[Finding]) -> None:
                 f"{classifier_dir}: record_demos 当前默认依赖 classifier，这会导致无 checkpoint 时无法稳定录 demo。",
             )
         )
-
-    wrench_env = ROOT / "ur_env/envs/ur_wrench_env.py"
-    wrench_text = load_text(wrench_env)
-    if "shape=(7,))" in wrench_text or "reshape((6, 7))" in wrench_text:
-        findings.append(
-            Finding(
-                "WARN",
-                "仓库里仍有 7 轴残留文件",
-                f"{wrench_env}: 仍包含 `q/dq shape=(7,)` 或 `jacobian reshape((6, 7))`。它不在当前主链里，但后续误用时会出问题。",
-            )
-        )
-
 
 def print_findings(findings: list[Finding]) -> None:
     grouped = {"FAIL": [], "WARN": [], "PASS": []}

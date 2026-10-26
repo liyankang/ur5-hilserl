@@ -1,4 +1,2 @@
-q   # 退出后
-python test_force_mode.py --damping 0.3 --gain_scaling 0.5   
-python test_force_mode.py --damping 0.5 --gain_scaling 0.3
-python test_force_mode.py --damping 0.7 --gain_scaling 0.3
+UR5 control uses streamed Cartesian pose servoing. Start the server with
+`serl_robot_ur/robot_servers/launch_ur_server_no_gripper_servo.sh`.

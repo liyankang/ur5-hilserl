@@ -1,1 +1,1 @@
-"""UR5 USB insertion task with translation-only target randomization."""
+"""UR5 USB insertion task with one fixed calibrated target."""

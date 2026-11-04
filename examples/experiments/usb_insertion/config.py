@@ -1,9 +1,8 @@
-"""UR5 USB insertion configuration.
+"""UR5 USB insertion configuration for one calibrated insertion position.
 
-The USB plug is fixed to the tool, so every target uses the same orientation.
-Only the insertion point is translated in the XY plane.  The candidate set is
-kept explicit so demonstrations can be balanced across positions and the
-workspace can be checked before the robot is enabled.
+The USB plug is fixed to the tool, so the task uses one calibrated target pose
+with a fixed orientation. Keeping a single target makes data collection and
+evaluation deterministic.
 """
 
 import os
@@ -104,24 +103,12 @@ class EnvConfig(DefaultEnvConfig):
         [0.1092, -0.6608, -0.2163, 2.9348, -1.0839, 0.0372],
         dtype=np.float64,
     )
-    TARGET_TRANSLATION_OFFSETS = np.array(
-        [
-            [-0.020, -0.020, 0.0],
-            [-0.020, 0.000, 0.0],
-            [-0.020, 0.020, 0.0],
-            [0.000, -0.020, 0.0],
-            [0.000, 0.000, 0.0],
-            [0.000, 0.020, 0.0],
-            [0.020, -0.020, 0.0],
-            [0.020, 0.000, 0.0],
-            [0.020, 0.020, 0.0],
-        ],
-        dtype=np.float64,
-    )
+    # One insertion position; there is no 3x3 target grid.
+    TARGET_TRANSLATION_OFFSETS = np.array([[0.0, 0.0, 0.0]], dtype=np.float64)
     TARGET_POSES = build_target_poses(BASE_TARGET_POSE, TARGET_TRANSLATION_OFFSETS)
     # Keep the original single-target API as the default/reference pose.
     TARGET_POSE = BASE_TARGET_POSE.copy()
-    TARGET_SELECTION = "random"
+    TARGET_SELECTION = "fixed"
 
     RESET_TARGET_OFFSET = np.array([0.0, 0.0, 0.10, 0.0, 0.0, 0.0])
     RESET_POSE = TARGET_POSE + RESET_TARGET_OFFSET
@@ -131,23 +118,18 @@ class EnvConfig(DefaultEnvConfig):
         [0.005, 0.005, 0.005, 0.02, 0.02, 0.02], dtype=np.float64
     )
 
-    # Bounds cover every translated target and the XY reset perturbation.
-    # Orientation is intentionally tight because this task does not randomize
-    # the plug angle.
-    RANDOM_RESET = True
-    RANDOM_XY_RANGE = 0.03
-    # Keep reset orientation identical across positions; only translation is
-    # randomized for this task.
+    # Keep both the insertion target and reset pose fixed for data collection.
+    RANDOM_RESET = False
+    RANDOM_XY_RANGE = 0.0
     RANDOM_RZ_RANGE = 0.0
-    _translation_extent = np.max(np.abs(TARGET_TRANSLATION_OFFSETS), axis=0)
-    _position_extent = _translation_extent + np.array(
-        [RANDOM_XY_RANGE, RANDOM_XY_RANGE, 0.0]
-    )
+    # Keep a usable teleoperation area around the fixed target.  This used to
+    # be the 20 mm target-grid extent plus 30 mm reset noise.
+    SAFETY_XY_MARGIN = np.array([0.05, 0.05], dtype=np.float64)
     ABS_POSE_LIMIT_LOW = BASE_TARGET_POSE - np.array(
         [
-            _position_extent[0],
-            _position_extent[1],
-            _position_extent[2] + 0.02,
+            SAFETY_XY_MARGIN[0],
+            SAFETY_XY_MARGIN[1],
+            0.02,
             0.01,
             0.01,
             0.01,
@@ -155,9 +137,9 @@ class EnvConfig(DefaultEnvConfig):
     )
     ABS_POSE_LIMIT_HIGH = BASE_TARGET_POSE + np.array(
         [
-            _position_extent[0],
-            _position_extent[1],
-            _position_extent[2] + 0.15,
+            SAFETY_XY_MARGIN[0],
+            SAFETY_XY_MARGIN[1],
+            0.15,
             0.01,
             0.01,
             0.01,

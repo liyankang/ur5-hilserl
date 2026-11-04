@@ -288,8 +288,9 @@ class urEnv(gym.Env):
         self._update_currpos()
         ob = self._get_obs()
         reward = self.compute_reward(ob)
-        done = self.curr_path_length >= self.max_episode_length or reward or self.terminate
-        return ob, int(reward), done, False, {"succeed": reward}
+        terminated = bool(reward or self.terminate)
+        truncated = bool(self.curr_path_length >= self.max_episode_length and not terminated)
+        return ob, int(reward), terminated, truncated, {"succeed": bool(reward)}
 
     def compute_reward(self, obs) -> bool:
         current_pose = obs["state"]["tcp_pose"]

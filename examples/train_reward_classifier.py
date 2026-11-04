@@ -38,6 +38,9 @@ flags.DEFINE_boolean(
 
 
 def _normalize_classifier_obs(obs, classifier_keys):
+    # Current SERLObsWrapper puts camera keys alongside state; accept old files too.
+    if "images" not in obs and all(key in obs for key in classifier_keys):
+        return {key: obs[key] for key in ["state", *classifier_keys]}
     if "images" not in obs:
         return None
 
@@ -128,7 +131,7 @@ def main(_):
         {k: v for k, v in env.observation_space.spaces.items() if k in kept_keys}
     )
 
-    success_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", "*success*.pkl"))
+    success_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", f"{FLAGS.exp_name}_*success*.pkl"))
     pos_examples = []
     num_skipped_success = 0
     for path in success_paths:
@@ -146,7 +149,7 @@ def main(_):
     if len(pos_examples) == 0:
         raise ValueError("No positive classifier samples found. Check success data or disable --terminal_only.")
     
-    failure_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", "*failure*.pkl"))
+    failure_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", f"{FLAGS.exp_name}_*failure*.pkl"))
     neg_examples = []
     num_skipped_failure = 0
     for path in failure_paths:

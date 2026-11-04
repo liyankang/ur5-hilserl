@@ -20,6 +20,7 @@ import glob
 from experiments.mappings import CONFIG_MAPPING
 from ur_env.utils.terminal_keyboard import TERMINAL_KEYBOARD_HUB
 from examples.auto_trajectory import auto_move_to_target
+from examples.collection_utils import make_transition, classifier_sample, save_pickle
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string("exp_name", "ram_insertion", "Name of experiment corresponding to folder.")
@@ -34,6 +35,7 @@ flags.DEFINE_boolean("resume", False, "Resume from latest existing data files.")
 # we use a timeout to determine if a key is still "held".
 _key_times = {}           # key -> last press timestamp
 _auto_mode = True         # True = auto (go to target), False = manual (keyboard)
+_last_mode_toggle = 0.0
 _kb_interrupted = False   # Set True when ; pressed during auto → break auto loop
 _key_timeout = 0.3        # seconds before a key is considered "released"
 _kb_wrapper = None        # direct reference to KeyBoardIntervention wrapper
@@ -41,10 +43,14 @@ _kb_wrapper = None        # direct reference to KeyBoardIntervention wrapper
 
 def _kb_handler(key_char: str):
     """Track key press times; ';' toggles auto/manual."""
-    global _auto_mode, _kb_interrupted
+    global _auto_mode, _kb_interrupted, _last_mode_toggle
     k = key_char.lower()
     _key_times[k] = time.monotonic()
     if k == ";":
+        now = time.monotonic()
+        if now - _last_mode_toggle < 0.25:
+            return
+        _last_mode_toggle = now
         if _auto_mode:
             _kb_interrupted = True
         _auto_mode = not _auto_mode
@@ -103,44 +109,49 @@ def main(_):
     else:
         print(f"WARNING: KeyBoardIntervention wrapper not found!")
 
-    obs, _ = env.reset()
-
     successes = []
     failures = []
     success_needed = FLAGS.successes_needed
-
-    # ── Resume: load existing data ──
-    if FLAGS.resume:
-        data_dir = "./classifier_data"
-        # Find latest success file
-        success_files = sorted(glob.glob(f"{data_dir}/{FLAGS.exp_name}_*success*.pkl"))
-        failure_files = sorted(glob.glob(f"{data_dir}/{FLAGS.exp_name}_*failure*.pkl"))
-        if success_files:
-            with open(success_files[-1], "rb") as f:
-                successes = pkl.load(f)
-            print(f"Resumed {len(successes)} successes from {success_files[-1]}")
-        if failure_files:
-            with open(failure_files[-1], "rb") as f:
-                failures = pkl.load(f)
-            print(f"Resumed {len(failures)} failures from {failure_files[-1]}")
-
-    pbar = tqdm(total=success_needed, initial=len(successes))
-    target_pose = env.unwrapped._TARGET_POSE
-    base_count = len(successes)  # number of successes loaded from resume
-
-    print("\n" + "=" * 60)
-    print("  AUTO mode: robot moves to target automatically")
-    print("  Press ; to intervene → MANUAL control (WASD/JK)")
-    print("  Press ; again → resume AUTO")
-    print("  Press SPACE to mark success (non-auto mode only)")
-    print("=" * 60 + "\n")
+    success_resume_path = failure_resume_path = None
 
     try:
-        while (len(successes) - base_count) < success_needed:
+        obs, _ = env.reset()
+        # ── Resume: load existing data ──
+        if FLAGS.resume:
+            data_dir = "./classifier_data"
+            # Find latest success file
+            success_files = sorted(glob.glob(f"{data_dir}/{FLAGS.exp_name}_*success*.pkl"), key=os.path.getmtime)
+            failure_files = sorted(glob.glob(f"{data_dir}/{FLAGS.exp_name}_*failure*.pkl"), key=os.path.getmtime)
+            if success_files:
+                success_resume_path = success_files[-1]
+                with open(success_files[-1], "rb") as f:
+                    successes = pkl.load(f)
+                print(f"Resumed {len(successes)} successes from {success_files[-1]}")
+            if failure_files:
+                failure_resume_path = failure_files[-1]
+                with open(failure_files[-1], "rb") as f:
+                    failures = pkl.load(f)
+                print(f"Resumed {len(failures)} failures from {failure_files[-1]}")
+
+        pbar = tqdm(total=success_needed, initial=len(successes))
+        target_pose = env.unwrapped._TARGET_POSE
+
+        print("\n" + "=" * 60)
+        print("  AUTO mode: robot moves to target automatically")
+        print("  Press ; to intervene → MANUAL control (WASD/JK)")
+        print("  Press ; again → resume AUTO")
+        print("  Press SPACE or F to label the current manual frame as success")
+        print("=" * 60 + "\n")
+
+        while len(successes) < success_needed:
 
             # ════════════════ AUTO MODE ════════════════
             if FLAGS.auto and _auto_mode:
                 _kb_interrupted = False
+                if _kb_wrapper is not None:
+                    _kb_wrapper.intervened = False
+                    _kb_wrapper._go_to_target = False
+                target_pose = env.unwrapped._TARGET_POSE.copy()
 
                 def interrupt_check():
                     return _kb_interrupted
@@ -149,12 +160,15 @@ def main(_):
                     env, target_pose,
                     speed_mm=FLAGS.auto_speed,
                     interrupt_check=interrupt_check,
+                    initial_obs=obs,
                 )
 
                 # Restore terminal for tqdm/print output
                 TERMINAL_KEYBOARD_HUB.suspend()
 
                 if interrupted:
+                    if transitions:
+                        obs = transitions[-1]["next_observations"]
                     # User pressed ; → switch to manual
                     _kb_interrupted = False
                     print(f"Auto interrupted → manual mode ({len(transitions)} transitions discarded)")
@@ -165,18 +179,18 @@ def main(_):
                 within, delta = _check_target_reached(env.unwrapped, target_pose)
                 print(f"Auto completed: delta={delta}, within={within}")
 
-                if within and len(transitions) > 0:
+                if transitions and transitions[-1]["infos"].get("succeed", False):
                     # Intermediate transitions → failures (classifier negative samples)
                     for t in transitions[:-1]:
-                        failures.append(copy.deepcopy(t))
+                        failures.append(classifier_sample(t, False))
                     # Only the final transition → success
-                    successes.append(copy.deepcopy(transitions[-1]))
+                    successes.append(classifier_sample(transitions[-1], True))
                     pbar.update(1)
                     print(f"  +1 success, {len(transitions)-1} failure samples")
                 else:
                     # Did not reach target → all transitions are failures
                     for t in transitions:
-                        failures.append(copy.deepcopy(t))
+                        failures.append(classifier_sample(t, False))
                     print(f"Auto: did not reach target, {len(transitions)} failure samples")
 
                 obs, _ = env.reset()
@@ -192,30 +206,17 @@ def main(_):
             if "intervene_action" in info:
                 action = info["intervene_action"]
 
-            transition = copy.deepcopy(dict(
-                observations=obs,
-                actions=action,
-                next_observations=next_obs,
-                rewards=rew,
-                masks=1.0 - done,
-                dones=done,
-            ))
+            transition = make_transition(obs, action, next_obs, rew, done, truncated, info)
             obs = next_obs
 
             # Record transitions
-            if FLAGS.auto:
-                # Auto mode + manual intervention → all frames are failures
-                failures.append(transition)
-                if len(failures) % 20 == 0:
-                    print(f"  [manual] {len(failures)} failure frames collected, action_norm={np.linalg.norm(action):.2f}")
+            marked_success = _is_key_active(" ") or info.get("manual_success", False)
+            if marked_success:
+                successes.append(classifier_sample(transition, True))
+                pbar.update(1)
+                _key_times.pop(" ", None)
             else:
-                # Non-auto mode: SPACE marks success
-                if _is_key_active(" "):
-                    successes.append(transition)
-                    pbar.update(1)
-                    _key_times.pop(" ", None)  # consume
-                else:
-                    failures.append(transition)
+                failures.append(classifier_sample(transition, False))
 
             if done or truncated:
                 if FLAGS.auto:
@@ -226,32 +227,34 @@ def main(_):
                 else:
                     # Non-auto: grace window for terminal success
                     deadline = time.time() + 1.0
-                    marked = False
-                    while time.time() < deadline and not _is_key_active(" "):
+                    while not marked_success and time.time() < deadline and not _is_key_active(" "):
                         time.sleep(0.02)
-                    if _is_key_active(" "):
-                        successes.append(failures.pop())
+                    if not marked_success and _is_key_active(" "):
+                        # Relabel this frame only; never pop a previous episode's sample.
+                        failures.pop()
+                        successes.append(classifier_sample(transition, True))
                         pbar.update(1)
                         _key_times.pop(" ", None)
                     obs, _ = env.reset()
     finally:
         unsub_kb()
-        # ── Save results even if interrupted ──
-        if successes or failures:
-            if not os.path.exists("./classifier_data"):
-                os.makedirs("./classifier_data")
-            uuid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            file_name = f"./classifier_data/{FLAGS.exp_name}_{success_needed}_success_images_{uuid}.pkl"
-            with open(file_name, "wb") as f:
-                pkl.dump(successes, f)
+        try:
+            # ── Save results even if interrupted ──
+            if successes or failures:
+                if not os.path.exists("./classifier_data"):
+                    os.makedirs("./classifier_data")
+                uuid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                file_name = success_resume_path or f"./classifier_data/{FLAGS.exp_name}_{success_needed}_success_images_{uuid}.pkl"
+                save_pickle(file_name, successes)
                 print(f"\nsaved {len(successes)} successful transitions to {file_name}")
 
-            file_name = f"./classifier_data/{FLAGS.exp_name}_failure_images_{uuid}.pkl"
-            with open(file_name, "wb") as f:
-                pkl.dump(failures, f)
+                file_name = failure_resume_path or f"./classifier_data/{FLAGS.exp_name}_failure_images_{uuid}.pkl"
+                save_pickle(file_name, failures)
                 print(f"saved {len(failures)} failure transitions to {file_name}")
-        else:
-            print("\nNo data collected, nothing saved.")
+            else:
+                print("\nNo data collected, nothing saved.")
+        finally:
+            env.close()
 
 
 if __name__ == "__main__":

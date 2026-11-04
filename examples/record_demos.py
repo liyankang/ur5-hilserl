@@ -33,42 +33,7 @@ flags.DEFINE_float("auto_speed", 2.0, "Auto mode step size in mm (default 2.0mm 
 flags.DEFINE_boolean("resume", False, "Resume from latest existing demo data.")
 
 from examples.auto_trajectory import auto_move_to_target
-
-
-def _compute_auto_action(obs, info, target_pose, speed=0.5):
-    """Compute action in EE frame to move TCP toward target pose.
-
-    The action flows through RelativeFrame which transforms EE→base, so we
-    compute the desired base-frame delta first, then rotate it into the EE frame.
-    """
-    base_pose = info["original_state_obs"]["tcp_pose"]
-    current_xyz = base_pose[:3]
-    current_quat = base_pose[3:7]
-
-    # --- translation: base-frame error → EE-frame action ---
-    pos_err = target_pose[:3] - current_xyz
-    R_ee = Rot.from_quat(current_quat).as_matrix()
-    R_ee_inv = R_ee.T
-    pos_action_ee = R_ee_inv @ pos_err
-
-    # --- rotation: base-frame rotvec error → EE-frame action ---
-    target_rot = Rot.from_rotvec(target_pose[3:6]).as_matrix()
-    current_rot = Rot.from_quat(current_quat).as_matrix()
-    diff_rot = current_rot.T @ target_rot
-    rot_err_rotvec = Rot.from_matrix(diff_rot).as_rotvec()
-    rot_action_ee = R_ee_inv @ rot_err_rotvec
-
-    # Normalise so that the largest component ≈ 1 when far away, then scale
-    combined = np.concatenate([pos_action_ee, rot_action_ee])
-    norm = np.linalg.norm(combined)
-    if norm < 1e-6:
-        return np.zeros(6, dtype=np.float32)
-    action_ee = (combined / norm) * speed
-
-    full_action = np.zeros(6, dtype=np.float32)
-    full_action[:3] = np.clip(action_ee[:3], -1.0, 1.0)
-    full_action[3:6] = np.clip(action_ee[3:6], -1.0, 1.0)
-    return full_action
+from examples.collection_utils import make_transition, label_success, save_pickle
 
 
 def main(_):
@@ -86,11 +51,16 @@ def main(_):
             restart_requested = True
         elif k == "f":
             success_requested = True
-        elif k == "g":
+        elif k == "h":
             failure_requested = True
 
     unsubscribe_restart = TERMINAL_KEYBOARD_HUB.register(_on_key)
-    print("Hotkeys: 'f' = mark success, 'g' = mark failure, 'r' = discard & reset")
+    print("Hotkeys: 'f' = success, 'h' = failure, 'r' = discard & reset; 'g' = go to target")
+
+    transitions = []
+    success_count = 0
+    success_needed = FLAGS.successes_needed
+    resume_path = None
 
     try:
         obs, info = env.reset()
@@ -102,19 +72,19 @@ def main(_):
         # ── Resume: load existing data ──
         if FLAGS.resume:
             data_dir = "./demo_data"
-            demo_files = sorted(glob.glob(f"{data_dir}/{FLAGS.exp_name}_*demos*.pkl"))
+            demo_files = sorted(glob.glob(f"{data_dir}/{FLAGS.exp_name}_*demos*.pkl"), key=os.path.getmtime)
             if demo_files:
+                resume_path = demo_files[-1]
                 with open(demo_files[-1], "rb") as f:
                     transitions = pkl.load(f)
                 success_count = len([t for t in transitions if t.get("infos", {}).get("succeed", False)])
                 print(f"Resumed {len(transitions)} transitions ({success_count} successes) from {demo_files[-1]}")
 
         pbar = tqdm(total=success_needed, initial=success_count)
-        base_success = success_count  # number of successes loaded from resume
         trajectory = []
         returns = 0
         
-        while (success_count - base_success) < success_needed:
+        while success_count < success_needed:
             if restart_requested:
                 restart_requested = False
                 success_requested = False
@@ -128,7 +98,9 @@ def main(_):
             if FLAGS.auto:
                 # Direct position control: move to target and collect trajectory
                 target = env.unwrapped._TARGET_POSE
-                trajectory, _interrupted = auto_move_to_target(env, target, speed_mm=FLAGS.auto_speed)
+                trajectory, _interrupted = auto_move_to_target(
+                    env, target, speed_mm=FLAGS.auto_speed, initial_obs=obs,
+                    interrupt_check=lambda: restart_requested or failure_requested)
 
                 # Restore terminal for tqdm/print output
                 TERMINAL_KEYBOARD_HUB.suspend()
@@ -146,7 +118,10 @@ def main(_):
                 print(f"\nFinal delta: {delta}, threshold: {base_env._REWARD_THRESHOLD}, "
                       f"within: {within_threshold}")
 
-                if within_threshold or success_requested:
+                if trajectory and not _interrupted and not failure_requested and (
+                    trajectory[-1]["infos"].get("succeed", False) or success_requested
+                ):
+                    label_success(trajectory[-1])
                     success_requested = False
                     for transition in trajectory:
                         transitions.append(copy.deepcopy(transition))
@@ -158,6 +133,7 @@ def main(_):
 
                 trajectory = []
                 returns = 0
+                restart_requested = success_requested = failure_requested = False
                 obs, info = env.reset()
 
                 # Re-enter raw mode for next iteration
@@ -171,10 +147,12 @@ def main(_):
             # Manual override: key press takes priority over auto detection
             if success_requested:
                 info["succeed"] = True
+                rew = 1.0
                 done = True
                 success_requested = False
             elif failure_requested:
                 info["succeed"] = False
+                rew = 0.0
                 done = True
                 failure_requested = False
 
@@ -191,24 +169,14 @@ def main(_):
             returns += rew
             if "intervene_action" in info:
                 actions = info["intervene_action"]
-            transition = copy.deepcopy(
-                dict(
-                    observations=obs,
-                    actions=actions,
-                    next_observations=next_obs,
-                    rewards=rew,
-                    masks=1.0 - done,
-                    dones=done,
-                    infos=info,
-                )
-            )
+            transition = make_transition(obs, actions, next_obs, rew, done, truncated, info)
             trajectory.append(transition)
             
             pbar.set_description(f"Return: {returns}")
 
             obs = next_obs
-            if done:
-                if info["succeed"]:
+            if done or truncated:
+                if info.get("succeed", False):
                     for transition in trajectory:
                         transitions.append(copy.deepcopy(transition))
                     success_count += 1
@@ -218,17 +186,19 @@ def main(_):
                 obs, info = env.reset()
     finally:
         unsubscribe_restart()
-        # ── Save results even if interrupted ──
-        if transitions:
-            if not os.path.exists("./demo_data"):
-                os.makedirs("./demo_data")
-            uuid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            file_name = f"./demo_data/{FLAGS.exp_name}_{success_needed}_demos_{uuid}.pkl"
-            with open(file_name, "wb") as f:
-                pkl.dump(transitions, f)
+        try:
+            # ── Save results even if interrupted ──
+            if transitions:
+                if not os.path.exists("./demo_data"):
+                    os.makedirs("./demo_data")
+                uuid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                file_name = resume_path or f"./demo_data/{FLAGS.exp_name}_{success_needed}_demos_{uuid}.pkl"
+                save_pickle(file_name, transitions)
                 print(f"\nsaved {len(transitions)} transitions ({success_count} successes) to {file_name}")
-        else:
-            print("\nNo transitions collected, nothing saved.")
+            else:
+                print("\nNo transitions collected, nothing saved.")
+        finally:
+            env.close()
 
 if __name__ == "__main__":
     app.run(main)

@@ -56,6 +56,14 @@ class ActionInterpolationWrapper(gym.Wrapper):
         
         # Initialize action buffer
         self.current_action = None
+        # Keyboard replacement happens inside interpolation. Scale it by the
+        # same weights as policy actions so one key press is not applied N times.
+        self._keyboard_wrappers = []
+        wrapped = env
+        while wrapped is not None:
+            if isinstance(wrapped, KeyBoardIntervention):
+                self._keyboard_wrappers.append(wrapped)
+            wrapped = getattr(wrapped, "env", None)
         self.action_space = env.action_space
         self._configure_timing()
 
@@ -88,6 +96,8 @@ class ActionInterpolationWrapper(gym.Wrapper):
         done = False
         truncated = False
         merged_info = {}
+        executed_action = np.zeros_like(self.current_action)
+        intervened = False
 
         for substep in range(self.interpolation_steps):
             # Linear interpolation: velocity increases linearly from slow to fast.
@@ -97,14 +107,27 @@ class ActionInterpolationWrapper(gym.Wrapper):
             # Sum = (2+4+...+2N) / (N*(N+1)) = N*(N+1) / (N*(N+1)) = 1.0 ✓
             weight = 2 * (substep + 1) / (self.interpolation_steps * (self.interpolation_steps + 1))
             sub_action = self.current_action * weight
-            obs, step_rew, step_done, step_truncated, step_info = self.env.step(sub_action)
+            for keyboard in self._keyboard_wrappers:
+                keyboard._interpolation_weight = weight
+            try:
+                obs, step_rew, step_done, step_truncated, step_info = self.env.step(sub_action)
+            finally:
+                for keyboard in self._keyboard_wrappers:
+                    keyboard._interpolation_weight = 1.0
+            executed_action += step_info.get("intervene_action", sub_action)
+            intervened = intervened or "intervene_action" in step_info
+            manual_success = merged_info.get("manual_success", False)
             merged_info.update(step_info)
+            if manual_success:
+                merged_info["manual_success"] = True
             rew += float(step_rew)
             done = done or step_done
             truncated = truncated or step_truncated
             if done or truncated:
                 break
 
+        if intervened:
+            merged_info["intervene_action"] = executed_action
         return obs, rew, done, truncated, merged_info
 
 class MultiCameraBinaryRewardClassifierWrapper(gym.Wrapper):
@@ -704,6 +727,8 @@ class KeyBoardIntervention(gym.ActionWrapper):
     def step(self, action):
         new_action, replaced = self.action(action)
 
+        if replaced:
+            new_action = new_action * getattr(self, "_interpolation_weight", 1.0)
         obs, rew, done, truncated, info = self.env.step(new_action)
         if replaced:
             info["intervene_action"] = new_action

@@ -1,4 +1,4 @@
-"""USB insertion environment with per-episode translated insertion targets."""
+"""USB insertion environment with a calibrated insertion target."""
 
 import logging
 
@@ -12,10 +12,10 @@ LOGGER = logging.getLogger(__name__)
 class USBInsertionEnv(RAMEnv):
     """RAM-style UR5 environment for a fixed-tool USB plug.
 
-    The plug orientation is fixed.  At reset, one candidate target is chosen
-    and all target-dependent state in ``urEnv`` is updated before the reset
-    motion starts.  This keeps reward evaluation and safety clipping aligned
-    with the physical insertion point.
+    The plug orientation and target position are fixed by the task config.
+    At reset, the configured target is selected and all target-dependent state
+    in ``urEnv`` is updated before the reset motion starts. This keeps reward
+    evaluation and safety clipping aligned with the physical insertion point.
     """
 
     def __init__(self, **kwargs):
@@ -45,11 +45,13 @@ class USBInsertionEnv(RAMEnv):
             return index
 
         selection = getattr(self.config, "TARGET_SELECTION", "random")
+        if selection in {"fixed", "single"}:
+            return 0
         if selection == "cycle":
             return self._episode_count % len(targets)
         if selection != "random":
             raise ValueError(
-                f"Unsupported TARGET_SELECTION={selection!r}; use 'random' or 'cycle'"
+                f"Unsupported TARGET_SELECTION={selection!r}; use 'fixed', 'random', or 'cycle'"
             )
         return int(np.random.randint(len(targets)))
 
@@ -65,7 +67,7 @@ class USBInsertionEnv(RAMEnv):
                 "change its orientation"
             )
 
-        # The final three components are copied from the configured candidate
+        # The final three components are copied from the configured target
         # pose; this method never introduces a rotation perturbation.
         self.current_target_pose = target_pose.copy()
         self._TARGET_POSE = target_pose.copy()
@@ -83,8 +85,8 @@ class USBInsertionEnv(RAMEnv):
         self.config.RESET_POSE = reset_pose.copy()
         self.resetpos = self._pose6_to_quat(reset_pose)
 
-        # The static safety box is built to contain every candidate target and
-        # its reset perturbation.  Fail early if a custom target set violates it.
+        # The static safety box must contain the target and its reset pose.
+        # Fail early if a custom calibrated pose violates it.
         target_in_box = np.all(target_pose[:3] >= self.xyz_bounding_box.low) and np.all(
             target_pose[:3] <= self.xyz_bounding_box.high
         )
@@ -111,8 +113,8 @@ class USBInsertionEnv(RAMEnv):
         """Select a target, then run the RAM-compatible reset sequence.
 
         ``target_index`` is useful for evaluation and calibration.  Training
-        can omit it to sample uniformly, or set ``TARGET_SELECTION='cycle'``
-        to guarantee balanced coverage across episodes.
+        can omit it to use the configured selection mode. The USB
+        single-position configuration uses ``TARGET_SELECTION='fixed'``.
         """
         if target_index is None and options is not None:
             target_index = options.get("target_index")

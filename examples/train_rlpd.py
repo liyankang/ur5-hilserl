@@ -111,6 +111,7 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
 
                 next_obs, reward, done, truncated, info = env.step(actions)
                 obs = next_obs
+                done = bool(done or truncated)
 
                 if done:
                     if reward:
@@ -230,7 +231,7 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
                 next_observations=next_obs,
                 rewards=reward,
                 masks=1.0 - done,
-                dones=done,
+                dones=bool(done or truncated),
             )
             if 'grasp_penalty' in info:
                 transition['grasp_penalty']= info['grasp_penalty']

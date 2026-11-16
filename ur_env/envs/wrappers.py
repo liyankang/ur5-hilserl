@@ -153,7 +153,9 @@ class MultiCameraBinaryRewardClassifierWrapper(gym.Wrapper):
         prob = self.compute_reward(obs)
         info['classifier_prob'] = float(prob)
         rew = 1.0 if prob >= self.reward_threshold else 0.0
-        done = done or rew
+        done = bool(done or rew)
+        if rew:
+            truncated = False
         info['succeed'] = bool(rew)
         if self.target_hz is not None:
             time.sleep(max(0, 1/self.target_hz - (time.time() - start_time)))

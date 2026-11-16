@@ -301,7 +301,7 @@ def main(_):
             evaluate_classifier(epoch + 1)
 
     checkpoints.save_checkpoint(
-        os.path.join(os.getcwd(), "classifier_ckpt/"),
+        config.classifier_checkpoint_path,
         classifier,
         step=FLAGS.num_epochs,
         overwrite=True,

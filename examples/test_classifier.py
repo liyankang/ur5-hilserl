@@ -4,6 +4,7 @@ import os
 sys.path.insert(0, 'examples')
 sys.path.insert(0, '.')
 
+import argparse
 import glob
 import pickle as pkl
 import numpy as np
@@ -17,22 +18,26 @@ from flax.training import checkpoints as ckpts
 
 
 def main():
-    exp_name = "ram_insertion"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--exp_name", choices=CONFIG_MAPPING, default="ram_insertion")
+    parser.add_argument("--threshold", type=float, default=0.95)
+    args = parser.parse_args()
+    exp_name = args.exp_name
     config = CONFIG_MAPPING[exp_name]()
     env = config.get_environment(fake_env=True, save_video=False, classifier=False)
     
     # 加载分类器
-    checkpoint_path = os.path.join(os.getcwd(), "classifier_ckpt/")
+    checkpoint_path = config.classifier_checkpoint_path
     
     # 创建 sample 用于初始化 classifier
     rng = jax.random.PRNGKey(0)
     # 使用 config 中实际的 classifier_keys
     img_keys = config.classifier_keys  # e.g. ["wrist"] or ["wrist_3"]
-    sample_obs = {"state": jnp.zeros((1, 19))}
-    for k in img_keys:
-        sample_obs[k] = jnp.zeros((1, 128, 128, 3), dtype=jnp.uint8)
-    
+    sample_obs = env.observation_space.sample()
+
     classifier = create_classifier(rng, sample_obs, config.classifier_keys)
+    if ckpts.latest_checkpoint(checkpoint_path) is None:
+        raise FileNotFoundError(f"No trained classifier in {checkpoint_path}")
     classifier = ckpts.restore_checkpoint(checkpoint_path, target=classifier)
     print("分类器加载完成!")
     
@@ -43,8 +48,8 @@ def main():
         return jax.nn.sigmoid(logits)
     
     # 加载测试数据
-    success_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", "*success*.pkl"))
-    failure_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", "*failure*.pkl"))
+    success_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", f"{exp_name}_*success*.pkl"))
+    failure_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", f"{exp_name}_*failure*.pkl"))
 
     # 旧数据相机名 → 新相机名映射
     # wrist_1→global_1 (/dev/video0), wrist_2→wrist (/dev/video2), wrist_3→global_2 (/dev/video4)
@@ -73,13 +78,11 @@ def main():
         with open(path, "rb") as f:
             data = pkl.load(f)
         for trans in data:
-            if "images" not in trans['observations'].keys():
-                continue
             # 展平 observation
-            obs = trans["observations"]
+            obs = trans.get("next_observations", trans["observations"])
             flat_obs = build_flat_obs(obs)
             prob = predict(flat_obs)
-            pred_label = (prob >= 0.5).item()
+            pred_label = (prob >= args.threshold).item()
             if pred_label == 1:  # 预测为成功
                 success_correct += 1
             success_total += 1
@@ -94,18 +97,18 @@ def main():
         for trans in data:
             if failure_total >= max_failure:
                 break
-            if "images" not in trans['observations'].keys():
-                continue
-            obs = trans["observations"]
+            obs = trans.get("next_observations", trans["observations"])
             flat_obs = build_flat_obs(obs)
             prob = predict(flat_obs)
-            pred_label = (prob >= 0.5).item()
+            pred_label = (prob >= args.threshold).item()
             if pred_label == 0:  # 预测为失败
                 failure_correct += 1
             failure_total += 1
         if failure_total >= max_failure:
             break
     
+    if not success_total or not failure_total:
+        raise ValueError("Need both success and failure samples for this task")
     print("\n" + "="*50)
     print("分类器验证结果:")
     print("="*50)

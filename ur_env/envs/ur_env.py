@@ -293,6 +293,9 @@ class urEnv(gym.Env):
         return ob, int(reward), terminated, truncated, {"succeed": bool(reward)}
 
     def compute_reward(self, obs) -> bool:
+        # An outer learned reward wrapper owns success during classifier-based RL.
+        if not getattr(self, "use_pose_reward", True):
+            return False
         current_pose = obs["state"]["tcp_pose"]
         current_rot = Rotation.from_quat(current_pose[3:]).as_matrix()
         if self.pose_rotation_repr == "euler":

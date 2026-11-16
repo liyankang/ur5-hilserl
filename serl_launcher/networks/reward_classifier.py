@@ -158,9 +158,16 @@ def load_classifier_func(
     Return: a function that takes in an observation
             and returns the logits of the classifier.
     """
+    latest = checkpoints.latest_checkpoint(os.path.abspath(checkpoint_path))
+    if latest is None:
+        raise FileNotFoundError(
+            f"No trained reward classifier in {checkpoint_path}. "
+            "Run examples/record_success_fail.py and examples/train_reward_classifier.py "
+            "for the selected --exp_name before starting the actor."
+        )
     classifier = create_classifier(key, sample, image_keys, n_way=n_way)
     classifier = checkpoints.restore_checkpoint(
-        checkpoint_path,
+        latest,
         target=classifier,
     )
     func = lambda obs: classifier.apply_fn(

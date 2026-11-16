@@ -98,11 +98,12 @@ class EnvConfig(DefaultEnvConfig):
     GRIPPER_SLEEP = 0.0
     GRIPPER_ENABLED = False
     MAX_EPISODE_LENGTH = 100
-    # Keep classifier integration available in code, but disabled for RAM sparse target reward mode.
-    ENABLE_CLASSIFIER_REWARD = False
+    # Online RL uses the learned visual success detector. Collection bypasses it.
+    ENABLE_CLASSIFIER_REWARD = True
 
     RESET_INTERPOLATE_TIMEOUT =2.0
 class TrainConfig(DefaultTrainingConfig):
+    classifier_checkpoint_path = os.path.abspath("classifier_ckpt/ram_insertion")
     image_keys = ["global_1", "wrist", "global_2"]
     classifier_keys = ["wrist", "global_2"]
     proprio_keys = ["tcp_pose", "tcp_vel", "tcp_force", "tcp_torque", "gripper_pose"]
@@ -142,17 +143,19 @@ class TrainConfig(DefaultTrainingConfig):
             policy_freq=EnvConfig.POLICY_HZ,
             control_freq=EnvConfig.CONTROL_HZ,
         )
-        if classifier and EnvConfig.ENABLE_CLASSIFIER_REWARD:
+        if classifier and not fake_env and EnvConfig.ENABLE_CLASSIFIER_REWARD:
+            # Do not terminate on a coordinate threshold before visual success.
+            env.unwrapped.use_pose_reward = False
             classifier = load_classifier_func(
                 key=jax.random.PRNGKey(0),
                 sample=env.observation_space.sample(),
                 image_keys=self.classifier_keys,
-                checkpoint_path=os.path.abspath("classifier_ckpt/"),
+                checkpoint_path=self.classifier_checkpoint_path,
             )
             
             def reward_func(obs):
                 sigmoid = lambda x: 1 / (1 + jnp.exp(-x))
-                return float(sigmoid(classifier(obs)))
+                return sigmoid(classifier(obs)).item()
 
             env = MultiCameraBinaryRewardClassifierWrapper(env, reward_func, reward_threshold=0.95)
         return env

@@ -33,13 +33,19 @@ flags.DEFINE_float("auto_speed", 2.0, "Auto mode step size in mm (default 2.0mm 
 flags.DEFINE_boolean("resume", False, "Resume from latest existing demo data.")
 
 from examples.auto_trajectory import auto_move_to_target
-from examples.collection_utils import make_transition, label_success, save_pickle
+from examples.collection_utils import (
+    make_transition, label_success, save_pickle, validate_action_space,
+    validate_transition_shapes, apply_manual_success,
+)
 
 
 def main(_):
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
     config = CONFIG_MAPPING[FLAGS.exp_name]()
-    env = config.get_environment(fake_env=False, save_video=False, classifier=False)
+    # USB 示范以视觉分类器判定成功；采集前先训练并验证成功检测器。
+    env = config.get_environment(fake_env=False, save_video=False,
+                                 classifier=FLAGS.exp_name == "usb_insertion")
+    validate_action_space(config, env)
     restart_requested = False
     success_requested = False
     failure_requested = False
@@ -77,6 +83,8 @@ def main(_):
                 resume_path = demo_files[-1]
                 with open(demo_files[-1], "rb") as f:
                     transitions = pkl.load(f)
+                for transition in transitions:
+                    validate_transition_shapes(transition, env.observation_space, env.action_space, resume_path)
                 success_count = len([t for t in transitions if t.get("infos", {}).get("succeed", False)])
                 print(f"Resumed {len(transitions)} transitions ({success_count} successes) from {demo_files[-1]}")
 
@@ -100,27 +108,19 @@ def main(_):
                 target = env.unwrapped._TARGET_POSE
                 trajectory, _interrupted = auto_move_to_target(
                     env, target, speed_mm=FLAGS.auto_speed, initial_obs=obs,
-                    interrupt_check=lambda: restart_requested or failure_requested)
+                    interrupt_check=lambda: restart_requested or failure_requested or success_requested)
 
                 # Restore terminal for tqdm/print output
                 TERMINAL_KEYBOARD_HUB.suspend()
 
-                # Check if final pose is within threshold
-                base_env = env.unwrapped
-                base_env._update_currpos()
-                final_pose = base_env.currpos.copy()
-                final_rot = Rot.from_quat(final_pose[3:]).as_matrix()
-                target_rot = Rot.from_rotvec(target[3:6]).as_matrix()
-                diff_rot = final_rot.T @ target_rot
-                diff_rotvec = Rot.from_matrix(diff_rot).as_rotvec()
-                delta = np.abs(np.hstack([final_pose[:3] - target[:3], diff_rotvec]))
-                within_threshold = np.all(delta < base_env._REWARD_THRESHOLD)
-                print(f"\nFinal delta: {delta}, threshold: {base_env._REWARD_THRESHOLD}, "
-                      f"within: {within_threshold}")
-
-                if trajectory and not _interrupted and not failure_requested and (
+                # 自动控制仅产生动作，绝不根据“接近坐标”把 USB 标成成功。
+                if trajectory and not restart_requested and not failure_requested and (
                     trajectory[-1]["infos"].get("succeed", False) or success_requested
                 ):
+                    if success_requested:
+                        info = trajectory[-1]["infos"]
+                        info["manual_success"] = True
+                        apply_manual_success(0.0, False, False, info, env=env)
                     label_success(trajectory[-1])
                     success_requested = False
                     for transition in trajectory:
@@ -145,15 +145,15 @@ def main(_):
             next_obs, rew, done, truncated, info = env.step(actions)
 
             # Manual override: key press takes priority over auto detection
-            if success_requested:
-                info["succeed"] = True
-                rew = 1.0
-                done = True
+            if (success_requested or info.get("manual_success", False)) and not info.get("safety_stop", False):
+                info["manual_success"] = True
+                rew, done, truncated, info = apply_manual_success(rew, done, truncated, info, env=env)
                 success_requested = False
             elif failure_requested:
                 info["succeed"] = False
                 rew = 0.0
                 done = True
+                truncated = False
                 failure_requested = False
 
             if restart_requested:

@@ -49,6 +49,7 @@ def create_classifier(
     sample: Dict,
     image_keys: List[str],
     n_way: int = 2,
+    use_proprio: bool = True,
 ):
     pretrained_encoder = resnetv1_configs["resnetv1-10-frozen"](
         pre_pooling=True,
@@ -66,7 +67,8 @@ def create_classifier(
     }
     encoder_def = EncodingWrapper(
         encoder=encoders,
-        use_proprio=True,
+        # USB固定工具默认只用图像判断成功，避免把已知坐标当成插入证据。
+        use_proprio=use_proprio,
         enable_stacking=True,
         image_keys=image_keys,
     )
@@ -153,6 +155,7 @@ def load_classifier_func(
     image_keys: List[str],
     checkpoint_path: str,
     n_way: int = 2,
+    use_proprio: bool = True,
 ) -> Callable[[Dict], jnp.ndarray]:
     """
     Return: a function that takes in an observation
@@ -165,7 +168,7 @@ def load_classifier_func(
             "Run examples/record_success_fail.py and examples/train_reward_classifier.py "
             "for the selected --exp_name before starting the actor."
         )
-    classifier = create_classifier(key, sample, image_keys, n_way=n_way)
+    classifier = create_classifier(key, sample, image_keys, n_way=n_way, use_proprio=use_proprio)
     classifier = checkpoints.restore_checkpoint(
         latest,
         target=classifier,

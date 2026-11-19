@@ -21,6 +21,12 @@ from typing import Any, Callable, Optional
 import numpy as np
 from flask import Flask, g, jsonify, request
 
+# 同时支持包导入和直接运行 ur_server.py，不依赖 ROS。
+if __package__:
+    from .cartesian_safety import CartesianSafetyGuard, SafetyViolation
+else:
+    from cartesian_safety import CartesianSafetyGuard, SafetyViolation
+
 try:
     import rtde_control
     import rtde_receive
@@ -221,7 +227,9 @@ class URStreamingController:
         if controller_mode != "servo":
             raise ValueError("Only controller_mode='servo' is supported")
         self.controller_mode = "servo"
-        self.control_hz = control_hz
+        self.control_hz = float(control_hz)
+        if not np.isfinite(self.control_hz) or self.control_hz <= 0:
+            raise ValueError("control_hz must be finite and positive")
         self.default_speed = default_speed
         self.default_accel = default_accel
         self.disable_motion = disable_motion
@@ -235,9 +243,11 @@ class URStreamingController:
         self._filtered_vel_rtde = None
         self._filtered_force_rtde = None
 
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._stop_event = threading.Event()
-        self._motion_lock = threading.Lock()
+        self._motion_lock = threading.RLock()
+        self._safety_guard = None
+        self._safety_stop_sent = False
         self._servo_paused = bool(start_paused_until_pose)
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -283,15 +293,29 @@ class URStreamingController:
 
     def clear_error(self) -> str:
         self.logger.info("clear_error requested")
-        self.stop_servo()
-        if _call_optional(self.rtde_c, ["reuploadScript"]) is not None:
-            return "Cleared and reuploaded RTDE script"
-        return "Cleared (best effort)"
+        with self._motion_lock:
+            if self._safety_guard is not None:
+                if not self._check_safety():
+                    raise SafetyViolation("clearerr cannot acknowledge a safety stop; use /reset_safety")
+                self.hold_position()
+            self.stop_servo()
+            if _call_optional(self.rtde_c, ["reuploadScript"]) is not None:
+                return "Cleared and reuploaded RTDE script"
+            return "Cleared (best effort)"
 
     def set_target_pose(self, pose, speed=None, accel=None, source: str = "policy") -> np.ndarray:
-        pose = ensure_quat_pose(pose)
-        state = self.get_state()
-        current_pose = state["pose"]
+        try:
+            pose = ensure_quat_pose(pose)
+        except (ValueError, TypeError) as exc:
+            if self._safety_guard is not None:
+                self._trip_safety(f"Invalid Cartesian target pose: {exc}")
+            raise
+        quaternion_norm = np.linalg.norm(pose[3:])
+        if not np.all(np.isfinite(pose)) or not np.isfinite(quaternion_norm) or quaternion_norm < 1e-12:
+            if self._safety_guard is not None:
+                self._trip_safety("Invalid Cartesian target pose")
+            raise ValueError("Target pose must be finite and have a nonzero quaternion")
+        current_pose = self.last_state.get("pose", pose)
         self.logger.debug(
             "set_target_pose source=%s %s %s speed=%s accel=%s",
             source,
@@ -300,19 +324,29 @@ class URStreamingController:
             _optional_or_default(speed, self.target_speed),
             _optional_or_default(accel, self.target_accel),
         )
-        with self._lock:
-            self.target_pose = pose
-            if speed is not None:
-                self.target_speed = float(speed)
-            if accel is not None:
-                self.target_accel = float(accel)
-            if self._servo_paused and self.start_paused_until_pose and source == "policy":
-                self._servo_paused = False
-                self.start_paused_until_pose = False
-                self.logger.info("motion_resumed_after_first_pose")
-            return self.target_pose.copy()
+        with self._motion_lock:
+            if self._safety_guard is not None:
+                if not self._check_safety():
+                    raise SafetyViolation("Robot safety stop is latched")
+                try:
+                    self._safety_guard.validate_target(quat_pose_to_rotvec_pose(pose))
+                except SafetyViolation as exc:
+                    self._trip_safety(exc)
+                    raise
+            with self._lock:
+                self.target_pose = pose
+                if speed is not None:
+                    self.target_speed = float(speed)
+                if accel is not None:
+                    self.target_accel = float(accel)
+                if self._safety_guard is not None or (self._servo_paused and self.start_paused_until_pose and source == "policy"):
+                    self._servo_paused = False
+                    self.start_paused_until_pose = False
+                return self.target_pose.copy()
 
     def move_joints(self, q, speed=None, accel=None) -> np.ndarray:
+        if self._safety_guard is not None:
+            raise SafetyViolation("Joint motion is disabled while Cartesian workspace supervision is active")
         q = np.asarray(q, dtype=np.float64).reshape(-1)
         if q.size != 6:
             raise ValueError("q must have length 6 for UR5")
@@ -358,9 +392,16 @@ class URStreamingController:
         return self.move_joints(target, speed=speed, accel=accel)
 
     def get_state(self) -> dict[str, Any]:
+        if self._safety_guard is not None:
+            self._check_safety()
         raw_pose_value = _optional_or_default(_call_optional(self.rtde_r, ["getActualTCPPose"]), np.zeros((6,)))
         raw_vel_value = _optional_or_default(_call_optional(self.rtde_r, ["getActualTCPSpeed"]), np.zeros((6,)))
-        raw_force_value = _optional_or_default(_call_optional(self.rtde_r, ["getActualTCPForce"]), np.zeros((6,)))
+        # 位置监督模式不依赖力反馈；固定零仅用于兼容既有观测结构。
+        position_only = self._safety_guard is not None and not self._safety_guard.wrench_monitor_enabled
+        if position_only:
+            raw_force_value = np.zeros((6,))
+        else:
+            raw_force_value = _optional_or_default(_call_optional(self.rtde_r, ["getActualTCPForce"]), np.zeros((6,)))
         q_value = _optional_or_default(_call_optional(self.rtde_r, ["getActualQ"]), np.zeros((6,)))
         dq_value = _optional_or_default(_call_optional(self.rtde_r, ["getActualQd"]), np.zeros((6,)))
         jacobian_value = _optional_or_default(
@@ -421,59 +462,175 @@ class URStreamingController:
                 + (1.0 - self.force_filter_alpha) * self._filtered_force_rtde
             )
 
+        # 增量控制使用实际位置而非滞后 EMA，否则下一目标会被不断拉回旧位置。
+        # 平滑位姿单独暴露为诊断字段，力/速度的原平滑规则继续用于观测。
+        wrench_output = np.zeros(6) if position_only else self._filtered_force_rtde
         state = {
-            "pose": ensure_quat_pose(self._filtered_pose_rtde).tolist(),
+            "pose": ensure_quat_pose(raw_pose).tolist(),
+            "pose_filtered": ensure_quat_pose(self._filtered_pose_rtde).tolist(),
             "vel": self._filtered_vel_rtde.tolist(),
-            "force": self._filtered_force_rtde[:3].tolist(),
-            "torque": self._filtered_force_rtde[3:6].tolist(),
+            "force": wrench_output[:3].tolist(),
+            "torque": wrench_output[3:6].tolist(),
             "q": q.tolist(),
             "dq": dq.tolist(),
             "jacobian": jacobian.reshape(6, jacobian.size // 6).tolist(),
             "gripper_pos": [0.0],
+            "safety_stop": bool(self._safety_guard is not None and self._safety_guard.latched),
+            "wrench_monitor_enabled": bool(self._safety_guard is not None and self._safety_guard.wrench_monitor_enabled),
+            "safety_reason": self._safety_guard.reason if self._safety_guard is not None else None,
+            "safety_guard": self._safety_guard.status() if self._safety_guard is not None else None,
         }
         self.last_state = state
         return state
 
     def stop_servo(self):
-        _call_optional(self.rtde_c, ["servoStop"])
-        _call_optional(self.rtde_c, ["stopL"])
-        _call_optional(self.rtde_c, ["speedStop"])
-
-    def _run(self):
-        dt = 1.0 / self.control_hz
-        while not self._stop_event.is_set():
-            if self.disable_motion:
-                # Dry-run mode for debugging command generation without moving the robot.
-                self.get_state()
-                time.sleep(dt)
+        # 一个停止接口失败时仍尝试其它可用接口，避免异常中断整个停止序列。
+        completed = False
+        errors = []
+        for name in ("servoStop", "stopL", "speedStop"):
+            method = getattr(self.rtde_c, name, None)
+            if not callable(method):
                 continue
-            if getattr(self, '_servo_paused', False):
-                time.sleep(0.01)
-                continue
+            try:
+                result = method()
+                if result is False:
+                    errors.append(f"{name} rejected the stop command")
+                else:
+                    completed = True
+            except Exception as exc:
+                errors.append(f"{name}: {exc}")
+        if errors:
+            self.logger.error("RTDE stop interface errors: %s", "; ".join(errors))
+        if not completed and self._safety_guard is not None:
+            raise SafetyViolation("No RTDE stop interface completed successfully; use the physical emergency stop")
 
-            cycle_start = time.monotonic()
+    def _raw_safety_readings(self, include_wrench=None):
+        # 保护判据读取原始值。未开启力反馈监测时，不调用可能不存在的力接口。
+        if include_wrench is None:
+            include_wrench = self._safety_guard is not None and self._safety_guard.wrench_monitor_enabled
+        pose_reader = getattr(self.rtde_r, "getActualTCPPose", None)
+        if not callable(pose_reader):
+            raise SafetyViolation("Raw TCP pose feedback is required for Cartesian supervision")
+        pose = np.asarray(pose_reader(), dtype=np.float64)
+        if pose.shape != (6,) or not np.all(np.isfinite(pose)):
+            raise SafetyViolation("Invalid raw TCP pose feedback")
+        wrench = None
+        if include_wrench:
+            force_reader = getattr(self.rtde_r, "getActualTCPForce", None)
+            if not callable(force_reader):
+                raise SafetyViolation("Raw TCP wrench feedback is required when wrench monitoring is enabled")
+            wrench = np.asarray(force_reader(), dtype=np.float64)
+            if wrench.shape != (6,) or not np.all(np.isfinite(wrench)):
+                raise SafetyViolation("Invalid raw TCP wrench feedback")
+        return pose, wrench
+
+    def _trip_safety(self, reason):
+        with self._motion_lock:
+            if self._safety_guard is not None:
+                self._safety_guard.latch(str(reason))
+            self._servo_paused = True
+            # 第一次触发即停止；锁存后保持暂停，避免每周期重复发送停止命令。
+            if not self._safety_stop_sent:
+                self._safety_stop_sent = True
+                self.stop_servo()
+                self.logger.error("safety_stop reason=%s", reason)
+
+    def _check_safety(self):
+        with self._motion_lock:
+            if self._safety_guard is None:
+                return True
+            if self._safety_guard.latched:
+                self._servo_paused = True
+                return False
+            try:
+                pose, wrench = self._raw_safety_readings()
+                self._safety_guard.observe(pose, wrench)
+                return True
+            except Exception as exc:
+                self._trip_safety(exc)
+                return False
+
+    def configure_safety(self, config):
+        candidate = CartesianSafetyGuard(config, self.control_hz)
+        with self._motion_lock:
+            if self._safety_guard is not None and self._safety_guard.latched:
+                raise SafetyViolation("Reconfiguration cannot clear a latched stop; use /reset_safety")
+            self._servo_paused = True
+            self.stop_servo()
+            pose, wrench = self._raw_safety_readings(include_wrench=candidate.wrench_monitor_enabled)
+            candidate.validate_readings(pose, wrench)
+            self._safety_guard = candidate
+            self._safety_stop_sent = False
+            with self._lock:
+                self.target_pose = ensure_quat_pose(pose)
+            # 新配置安装后等待第一条合法笛卡尔目标，不自动追踪旧目标。
+            return candidate.status()
+
+    def reset_safety(self, acknowledge=False):
+        if acknowledge is not True:
+            raise ValueError("Explicit acknowledge=true is required after inspecting the real robot")
+        with self._motion_lock:
+            if self._safety_guard is None:
+                raise ValueError("No Cartesian safety supervisor has been configured")
+            self._servo_paused = True
+            self.stop_servo()
+            pose, wrench = self._raw_safety_readings()
+            self._safety_guard.acknowledge(pose, wrench)
+            self._safety_stop_sent = False
+            with self._lock:
+                self.target_pose = ensure_quat_pose(pose)
+            return self._safety_guard.status()
+
+    def hold_position(self):
+        with self._motion_lock:
+            self._servo_paused = True
+            # 先撤掉旧伺服目标，再读取实际位置。保持不会清除任何安全锁存。
+            self.stop_servo()
+            try:
+                pose, _ = self._raw_safety_readings()
+            except Exception as exc:
+                self._trip_safety(exc)
+                raise SafetyViolation(str(exc)) from exc
+            with self._lock:
+                self.target_pose = ensure_quat_pose(pose)
+                return self.target_pose.copy()
+
+    def _servo_cycle(self, dt):
+        # 独立于相机和 HTTP 的周期检查；即使暂停中，也检查是否出现新的超力。
+        with self._motion_lock:
+            if not self._check_safety() or self.disable_motion or self._servo_paused:
+                return False
             with self._lock:
                 target_pose = self.target_pose.copy()
                 speed = self.target_speed
                 accel = self.target_accel
+            target_rotvec = quat_pose_to_rotvec_pose(target_pose).tolist()
+            if self._safety_guard is not None:
+                try:
+                    self._safety_guard.validate_target(target_rotvec)
+                except SafetyViolation as exc:
+                    self._trip_safety(exc)
+                    return False
+            period = _call_optional(self.rtde_c, ["initPeriod"])
+            result = _call_optional(self.rtde_c, ["servoL"], target_rotvec, speed, accel, dt, self.lookahead_time, self.servo_gain)
+            if result is None:
+                if self._safety_guard is not None:
+                    raise SafetyViolation("servoL is unavailable; guarded mode cannot fall back to blocking moveL")
+                _call_optional(self.rtde_c, ["moveL"], target_rotvec, speed, accel)
+            elif result is False:
+                raise SafetyViolation("RTDE servoL rejected the command")
+            if period is not None:
+                _call_optional(self.rtde_c, ["waitPeriod"], period)
+            return True
 
-            with self._motion_lock:
-                period = _call_optional(self.rtde_c, ["initPeriod"])
-                target_rotvec = quat_pose_to_rotvec_pose(target_pose).tolist()
-                servo_result = _call_optional(
-                    self.rtde_c,
-                    ["servoL"],
-                    target_rotvec,
-                    speed,
-                    accel,
-                    dt,
-                    self.lookahead_time,
-                    self.servo_gain,
-                )
-                if servo_result is None:
-                    _call_optional(self.rtde_c, ["moveL"], target_rotvec, speed, accel)
-                if period is not None:
-                    _call_optional(self.rtde_c, ["waitPeriod"], period)
+    def _run(self):
+        dt = 1.0 / self.control_hz
+        while not self._stop_event.is_set():
+            cycle_start = time.monotonic()
+            try:
+                self._servo_cycle(dt)
+            except Exception as exc:
+                self._trip_safety(exc)
 
             remaining = dt - (time.monotonic() - cycle_start)
             if remaining > 0:
@@ -550,6 +707,35 @@ def create_app(
 
     def _request_id() -> str:
         return getattr(g, "request_id", "-")
+
+    @app.route("/configure_safety", methods=["POST"])
+    def configure_safety():
+        try:
+            status = robot_backend.configure_safety(request.get_json(silent=True) or {})
+            return jsonify({"status": "Configured", "safety_guard": status})
+        except SafetyViolation as exc:
+            return jsonify({"error": str(exc)}), 409
+        except (ValueError, TypeError, KeyError) as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.route("/reset_safety", methods=["POST"])
+    def reset_safety():
+        try:
+            body = request.get_json(silent=True) or {}
+            status = robot_backend.reset_safety(acknowledge=body.get("acknowledge", False))
+            return jsonify({"status": "Acknowledged; motion remains paused", "safety_guard": status})
+        except SafetyViolation as exc:
+            return jsonify({"error": str(exc)}), 409
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.route("/hold", methods=["POST"])
+    def hold():
+        try:
+            target = robot_backend.hold_position()
+            return jsonify({"status": "Holding", "target_pose": _to_jsonable(target)})
+        except (ValueError, SafetyViolation) as exc:
+            return jsonify({"error": str(exc)}), 409
 
     @app.route("/pose", methods=["POST"])
     def pose():

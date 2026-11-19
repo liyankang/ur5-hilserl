@@ -1,0 +1,2 @@
+examples/experiments/usb_insertion/run_actor.sh text eol=lf
+examples/experiments/usb_insertion/run_learner.sh text eol=lf

@@ -2,8 +2,7 @@
 import copy
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
-from examples.collection_utils import make_transition
-from ur_env.utils.transformations import construct_adjoint_matrix
+from examples.collection_utils import apply_manual_success, make_transition
 
 
 def auto_move_to_target(env, target_pose, speed_mm=2.0, interrupt_check=None,
@@ -23,6 +22,10 @@ def auto_move_to_target(env, target_pose, speed_mm=2.0, interrupt_check=None,
             return transitions, True
         action = compute_auto_step_action(base_env, target_pose, speed=speed)
         next_obs, reward, terminated, truncated, info = env.step(action)
+        # 自动轨迹只负责移动；视觉成功或人工验收才有资格结束为成功。
+        if info.get("manual_success", False):
+            reward, terminated, truncated, info = apply_manual_success(
+                reward, terminated, truncated, info, env=env)
         transitions.append(make_transition(
             obs, action, next_obs, reward, terminated, truncated, info))
         obs = copy.deepcopy(next_obs)
@@ -31,7 +34,7 @@ def auto_move_to_target(env, target_pose, speed_mm=2.0, interrupt_check=None,
 
 
 def compute_auto_step_action(base_env, target_pose, speed=0.2, rot_speed=0.05):
-    """Invert RelativeFrame and scaled MRP conversion for a bounded base delta."""
+    """按 TCP 增量约定反解旋转坐标变换，再转成策略使用的 MRP。"""
     pose = base_env.currpos.copy()
     target_pose = np.asarray(target_pose)
     scale_xyz, scale_rot = base_env.action_scale[:2]
@@ -45,10 +48,12 @@ def compute_auto_step_action(base_env, target_pose, speed=0.2, rot_speed=0.05):
     norm = np.linalg.norm(rot_delta)
     if norm > rot_speed:
         rot_delta *= rot_speed / norm
-    base_action = np.concatenate([
-        pos_delta, rot_delta / scale_rot if scale_rot > 0 else np.zeros(3)])
-    # RelativeFrame uses the full adjoint, including translation/rotation coupling.
-    ee_action = np.linalg.solve(construct_adjoint_matrix(pose), base_action)
+    # 当前控制作用在同一个 TCP 点，平移不应通过 p×R 产生伪旋转。
+    rotation_inv = current_rot.as_matrix().T
+    ee_action = np.concatenate([
+        rotation_inv @ pos_delta,
+        rotation_inv @ rot_delta / scale_rot if scale_rot > 0 else np.zeros(3),
+    ])
     if scale_rot > 0:
         ee_action[3:] = Rot.from_rotvec(ee_action[3:] * scale_rot).as_mrp() / scale_rot
     else:

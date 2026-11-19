@@ -29,7 +29,7 @@ class FakeArmBackend:
     def close(self):
         self.closed = True
 
-    def set_target_pose(self, pose, speed=None, accel=None):
+    def set_target_pose(self, pose, speed=None, accel=None, source="policy"):
         pose = ensure_quat_pose(pose)
         self.pose = pose.tolist()
         self.last_pose_command = {

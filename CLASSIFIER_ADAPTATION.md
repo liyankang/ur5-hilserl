@@ -50,3 +50,26 @@ python -m unittest tests.test_visual_reward_pipeline -v
 ```
 
 这些测试验证数据分组、标签请求、指标及报告与权重的一致性，不连接相机、机械臂，不初始化真实 JAX 网络。
+#(hilserl) serl@serl-ThinkCentre-M8600t-N000:~/Desktop/ur_hilserl$ python examples/record_success_fail.py --exp_name=usb_insertion --successes_needed=100
+2026-11-19 18:58:28.969465: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:467] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1795085908.984051    8232 cuda_dnn.cc:8579] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1795085908.989148    8232 cuda_blas.cc:1407] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+W0000 00:00:1795085909.000302    8232 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1795085909.000323    8232 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1795085909.000326    8232 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1795085909.000328    8232 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+Traceback (most recent call last):
+  File "/home/serl/Desktop/ur_hilserl/examples/record_success_fail.py", line 167, in <module>
+    app.run(main)
+  File "/home/serl/miniforge3/envs/hilserl/lib/python3.10/site-packages/absl/app.py", line 367, in run
+    _run_main(main, args)
+  File "/home/serl/miniforge3/envs/hilserl/lib/python3.10/site-packages/absl/app.py", line 312, in _run_main
+    sys.exit(main(argv))
+  File "/home/serl/Desktop/ur_hilserl/examples/record_success_fail.py", line 95, in main
+    env = config.get_environment(fake_env=False, save_video=False, classifier=False)
+  File "/home/serl/Desktop/ur_hilserl/examples/experiments/usb_insertion/config.py", line 163, in get_environment
+    require_hardware_ready(self.task_config, classifier=classifier)
+  File "/home/serl/Desktop/ur_hilserl/examples/experiments/usb_insertion/runtime_config.py", line 149, in require_hardware_ready
+    raise ValueError("Real UR5 control is blocked until calibration is complete: " + ", ".join(missing))
+ValueError: Real UR5 control is blocked until calibration is complete: tcp_verified, workspace_verified, reset_path_verified, camera_fov_verified, calibration.status=calibrated

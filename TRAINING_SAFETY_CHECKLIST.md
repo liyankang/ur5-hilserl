@@ -5,7 +5,7 @@
 ## 1. 实机标定与运动范围
 
 - [ ] U 盘、适配器和插座已可靠固定，TCP 偏置与工具负载已按实际装置设置。
-- [ ] 已重新标定 JSON 的插入位姿、复位位姿和插入轴；仓库提供的坐标只是旧装置示例。
+- [ ] 已确认 JSON 的插入位姿、复位位姿和插入轴适用于当前装置。当前配置沿用原 RAM 插入点的 XYZ 和 USB 标称朝向；换装置时需要重新确认这些值。
 - [ ] 已手动验证 `workspace_bounds` 的位置边界和参考姿态附近的旋转边界，覆盖完整初始偏差范围。
 - [ ] 已验证整条手臂、相机支架、法兰和 U 盘的扫掠空间，不只检查 TCP 点是否在盒内；TCP 包围盒本身不能证明不碰撞。
 - [ ] 开始采集/训练前，实际 TCP 已位于标定盒与姿态范围内。程序不会从盒外自动把机械臂拉入盒内。
@@ -41,7 +41,7 @@
 在项目根目录执行：
 
 ```bash
-# 仅检查 JSON 结构和几何范围；默认示例会显示 ready=false，不连接机器人。
+# 仅检查 JSON 结构、几何范围和现场确认记录，不连接机器人。
 python examples/check_usb_training_setup.py
 
 # 标定后检查是否允许采集；未确认标定时退出码为 2。
@@ -51,7 +51,7 @@ python examples/check_usb_training_setup.py --stage collection
 python examples/check_usb_training_setup.py --stage training
 ```
 
-可添加 `--probe-server` 只读查询 `/getstate`，不会调用复位或运动接口。指定另一份配置时设置 `UR5_USB_TRAIN_CONFIG`，采集、分类器训练和 Actor/Learner 都读取同一份 JSON。
+可添加 `--probe-server` 只读查询 `/getstate`，查看当前 TCP、配置边界和超界的 XYZ 轴。探测不会调用复位或运动接口。指定另一份配置时设置 `UR5_USB_TRAIN_CONFIG`，采集、分类器训练和 Actor/Learner 都读取同一份 JSON。
 
 ## 5. 完成标定后的启动顺序
 

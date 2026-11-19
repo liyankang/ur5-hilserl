@@ -10,7 +10,7 @@ UR5 control uses streamed Cartesian pose servoing. Start the server with
 - 实机标定、控制限制与启动门槛：[TRAINING_SAFETY_CHECKLIST.md](TRAINING_SAFETY_CHECKLIST.md)
 - 数据字段与采集入口：[examples/DATA_COLLECTION.md](examples/DATA_COLLECTION.md)
 
-默认 JSON 含未标定标记，真实控制会明确拒绝启动。只读检查：
+默认 JSON 记录当前装置的现场确认结果，插入点 XYZ 沿用已验证的 `ram_insertion`。更换装置后需要重新确认标定。只读检查：
 
 ```bash
 python examples/check_usb_training_setup.py

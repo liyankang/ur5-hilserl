@@ -24,8 +24,6 @@ def _probe_server(config):
     request = Request(url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
     with urlopen(request, timeout=3.0) as response:
         state = json.load(response)
-    if state.get("safety_stop"):
-        raise ValueError("Controller safety stop is latched; inspect it on site before proceeding")
     for name, size in (("q", 6), ("force", 3), ("torque", 3), ("pose", 7)):
         vector(state.get(name), size, f"Server {name}")
     pose = state["pose"]
@@ -38,6 +36,8 @@ def _probe_server(config):
     return {
         "server_reachable": True,
         "server_safety": state.get("safety_guard"),
+        "safety_stop": bool(state.get("safety_stop")),
+        "safety_reason": state.get("safety_reason"),
         "current_tcp_xyz_m": pose[:3],
         "current_tcp_quaternion_xyzw": pose[3:],
         "current_tcp_outside_workspace_axes": outside,
@@ -68,6 +68,9 @@ def check_setup(path=None, stage="offline", probe_server=False):
 
     # 离线检查可查看结构；进入采集/训练前必须明确通过标定与模型检查。
     try:
+        if report.get("safety_stop"):
+            reason = report.get("safety_reason") or "server did not report a reason; check the robot server log"
+            raise ValueError(f"Controller safety stop is latched: {reason}")
         require_hardware_ready(config, classifier=(stage == "training"))
         outside = report.get("current_tcp_outside_workspace_axes", [])
         if outside:

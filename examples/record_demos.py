@@ -42,9 +42,7 @@ from examples.collection_utils import (
 def main(_):
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
     config = CONFIG_MAPPING[FLAGS.exp_name]()
-    # USB 示范以视觉分类器判定成功；采集前先训练并验证成功检测器。
-    env = config.get_environment(fake_env=False, save_video=False,
-                                 classifier=FLAGS.exp_name == "usb_insertion")
+    env = config.get_environment(fake_env=False, save_video=False, classifier=False)
     validate_action_space(config, env)
     restart_requested = False
     success_requested = False

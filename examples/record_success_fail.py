@@ -22,7 +22,7 @@ from ur_env.utils.terminal_keyboard import TERMINAL_KEYBOARD_HUB
 from examples.collection_utils import make_transition, classifier_sample, save_pickle
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string("exp_name", "usb_insertion", "要采集的任务名称。")
+flags.DEFINE_string("exp_name", "ram_insertion", "要采集的任务名称。")
 flags.DEFINE_integer("successes_needed", 100, "成功样本总数，包含续采文件中的样本。")
 flags.DEFINE_boolean("resume", False, "在最新采集快照上续采。")
 flags.DEFINE_boolean("auto", False, "已禁用：视觉奖励样本必须由人明确标注。")

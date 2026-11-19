@@ -97,6 +97,9 @@ class DefaultEnvConfig:
     RANDOM_RZ_RANGE = (0.0,)
     ABS_POSE_LIMIT_HIGH = np.zeros((6,))
     ABS_POSE_LIMIT_LOW = np.zeros((6,))
+    COMPLIANCE_PARAM: Dict[str, float] = {}
+    RESET_PARAM: Dict[str, float] = {}
+    PRECISION_PARAM: Dict[str, float] = {}
     LOAD_PARAM: Dict[str, float] = {
         "mass": 0.0,
         "F_x_center_load": [0.0, 0.0, 0.0],
@@ -446,10 +449,12 @@ class urEnv(gym.Env):
         implemented each subclass for the specific task.
         Should override this method if custom reset procedure is needed.
         """
-        # Reset uses streamed Cartesian pose commands.
+        # Change to precision mode for reset        # Use compliance mode for coupled reset
         self._update_currpos()
         self._send_pos_command(self.currpos, source="reset")
         time.sleep(0.3)
+        requests.post(self.url + "update_param", json=self.config.PRECISION_PARAM)
+        time.sleep(0.5)
 
         # Perform joint reset if needed
         if joint_reset:
@@ -472,8 +477,12 @@ class urEnv(gym.Env):
             reset_pose = self.resetpos.copy()
             self.interpolate_move(reset_pose, timeout=1)
 
+        # Change to compliance mode
+        requests.post(self.url + "update_param", json=self.config.COMPLIANCE_PARAM)
+
     def reset(self, joint_reset=False, **kwargs):
         self.last_gripper_act = time.time()
+        requests.post(self.url + "update_param", json=self.config.COMPLIANCE_PARAM)
         if self.save_video:
             self.save_video_recording()
 

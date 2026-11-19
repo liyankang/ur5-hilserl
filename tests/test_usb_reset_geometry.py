@@ -308,7 +308,7 @@ class USBResetStopTests(unittest.TestCase):
 
 
 class USBConfigGateTests(unittest.TestCase):
-    def test_default_uncalibrated_config_rejects_real_environment_before_io(self):
+    def test_uncalibrated_config_rejects_real_environment_before_io(self):
         tree = ast.parse((ROOT / "examples/experiments/usb_insertion/config.py").read_text(encoding="utf-8-sig"))
         cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "TrainConfig")
         method = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "get_environment")
@@ -318,6 +318,7 @@ class USBConfigGateTests(unittest.TestCase):
         namespace = {"require_hardware_ready": require_hardware_ready, "USBInsertionEnv": forbidden_env}
         exec(compile(ast.Module(body=[method], type_ignores=[]), "config.py", "exec"), namespace)
         config = types.SimpleNamespace(task_config=load_config())
+        config.task_config["calibration"]["status"] = "pending"
         with self.assertRaisesRegex(ValueError, "calibration"):
             namespace["get_environment"](config, fake_env=False, classifier=False)
 

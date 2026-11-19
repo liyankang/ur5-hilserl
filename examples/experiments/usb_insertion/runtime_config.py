@@ -25,9 +25,13 @@ def resolve_path(value):
     return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
 
 
-def load_config(path=None):
+def resolve_config_path(path=None):
     # 环境变量让采集、分类器训练和在线训练使用同一份配置。
-    path = Path(path or os.environ.get("UR5_USB_TRAIN_CONFIG", DEFAULT_CONFIG)).resolve()
+    return Path(path or os.environ.get("UR5_USB_TRAIN_CONFIG", DEFAULT_CONFIG)).expanduser().resolve()
+
+
+def load_config(path=None):
+    path = resolve_config_path(path)
     with path.open(encoding="utf-8-sig") as stream:
         config = json.load(stream)
     validate_config(config)

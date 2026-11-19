@@ -1,6 +1,9 @@
 """JSON 的离线防错检查，不导入相机或机器人运行环境。"""
 import copy
+import io
+import json
 import unittest
+from unittest.mock import patch
 
 from examples.experiments.usb_insertion.runtime_config import load_config, validate_config, require_hardware_ready, controller_safety_payload
 from examples.check_usb_training_setup import check_setup
@@ -10,13 +13,33 @@ class USBRuntimeConfigTests(unittest.TestCase):
     def setUp(self):
         self.config = load_config()
 
-    def test_default_is_valid_but_blocks_real_motion(self):
-        report = check_setup()
+    def test_site_configuration_passes_collection_preflight(self):
+        report = check_setup(stage="collection")
         self.assertTrue(report["schema_valid"])
-        self.assertFalse(report["ready"])
+        self.assertTrue(report["ready"])
         self.assertEqual(report["action_dim"], 6)
+
+    def test_unverified_geometry_still_blocks_real_motion(self):
+        config = copy.deepcopy(self.config)
+        config["calibration"]["workspace_verified"] = False
         with self.assertRaisesRegex(ValueError, "calibration"):
-            require_hardware_ready(self.config)
+            require_hardware_ready(config)
+
+    def test_read_only_probe_reports_tcp_axes_and_blocks_outside_start(self):
+        xyz = list(self.config["reset"]["nominal_tcp_pose_m_rotvec"][:3])
+        xyz[1] = self.config["workspace_bounds"]["position_high_m"][1] + 0.005
+        state = {"pose": xyz + [0, 0, 0, 1], "q": [0] * 6, "force": [0] * 3, "torque": [0] * 3}
+        with patch("examples.check_usb_training_setup.urlopen", return_value=io.BytesIO(json.dumps(state).encode())) as request:
+            report = check_setup(probe_server=True)
+        endpoint = request.call_args.args[0]
+        self.assertEqual(endpoint.get_method(), "POST")
+        self.assertTrue(endpoint.full_url.endswith("/getstate"))
+        self.assertEqual(report["current_tcp_xyz_m"], xyz)
+        self.assertEqual(report["current_tcp_outside_workspace_axes"], ["Y"])
+        self.assertFalse(report["ready"])
+        with patch("examples.check_usb_training_setup.urlopen", return_value=io.BytesIO(json.dumps(state).encode())):
+            with self.assertRaisesRegex(ValueError, "outside workspace_bounds on Y"):
+                check_setup(stage="collection", probe_server=True)
 
     def test_full_reset_range_not_only_center_is_checked(self):
         config = copy.deepcopy(self.config)

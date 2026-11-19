@@ -41,6 +41,19 @@ class USBRuntimeConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "outside workspace_bounds on Y"):
                 check_setup(stage="collection", probe_server=True)
 
+    def test_probe_reports_latched_stop_reason_and_pose(self):
+        xyz = self.config["reset"]["nominal_tcp_pose_m_rotvec"][:3]
+        reason = "RTDE servoL rejected the command"
+        state = {"pose": xyz + [0, 0, 0, 1], "q": [0] * 6, "force": [0] * 3, "torque": [0] * 3,
+                 "safety_stop": True, "safety_reason": reason}
+        with patch("examples.check_usb_training_setup.urlopen", return_value=io.BytesIO(json.dumps(state).encode())):
+            report = check_setup(probe_server=True)
+        self.assertFalse(report["ready"])
+        self.assertTrue(report["safety_stop"])
+        self.assertEqual(report["safety_reason"], reason)
+        self.assertEqual(report["current_tcp_xyz_m"], xyz)
+        self.assertIn(reason, report["not_ready_reason"])
+
     def test_full_reset_range_not_only_center_is_checked(self):
         config = copy.deepcopy(self.config)
         config["reset"]["translation_range_m"][0] = 0.05

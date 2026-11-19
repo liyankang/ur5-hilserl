@@ -615,7 +615,8 @@ class urEnv(gym.Env):
         if ps.get("safety_stop"):
             self._safety_stop = True
             self.terminate = True
-            raise RuntimeError(f"Robot safety stop: {ps.get('safety_stop')}")
+            reason = ps.get("safety_reason") or "server did not report a reason; check the robot server log"
+            raise RuntimeError(f"Robot safety stop: {reason}")
         pose = ps.get("pose", np.zeros((7,), dtype=np.float32))
         self.currpos = self._normalize_pose(pose)
         self.currvel = np.array(ps.get("vel", np.zeros((6,))), dtype=np.float32).reshape(-1)

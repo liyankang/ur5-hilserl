@@ -228,8 +228,8 @@ class FixedToolControlTests(unittest.TestCase):
 
     def test_safety_stop_and_outside_workspace_send_no_new_command(self):
         env = robot_env()
-        with self.assertRaisesRegex(RuntimeError, "Robot safety stop"):
-            env._parse_state_response({"safety_stop": {"reason": "force_limit"}})
+        with self.assertRaisesRegex(RuntimeError, "Robot safety stop: TCP orientation is outside"):
+            env._parse_state_response({"safety_stop": True, "safety_reason": "TCP orientation is outside"})
         with self.assertRaisesRegex(RuntimeError, "latched"):
             env.step(np.zeros(6))
         self.assertEqual(env.commands, [])

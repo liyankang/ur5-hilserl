@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import os
+import logging
 from tqdm import tqdm
 import numpy as np
 import copy
@@ -72,9 +73,12 @@ def _compute_auto_action(obs, info, target_pose, speed=0.5):
 
 
 def main(_):
+    if FLAGS.exp_name == "ram_insertion" and FLAGS.auto and os.getenv("RAM_PORT_VISION_CONFIG"):
+        raise ValueError("Use manual demonstrations when RAM port vision is active")
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
     config = CONFIG_MAPPING[FLAGS.exp_name]()
     env = config.get_environment(fake_env=False, save_video=False, classifier=False)
+    port_vision_active = getattr(env.unwrapped, "port_approach", None) is not None
     restart_requested = False
     success_requested = False
     failure_requested = False
@@ -92,12 +96,12 @@ def main(_):
     unsubscribe_restart = TERMINAL_KEYBOARD_HUB.register(_on_key)
     print("Hotkeys: 'f' = mark success, 'g' = mark failure, 'r' = discard & reset")
 
+    transitions = []
+    success_count = 0
+    success_needed = FLAGS.successes_needed
     try:
         obs, info = env.reset()
         print("Reset done")
-        transitions = []
-        success_count = 0
-        success_needed = FLAGS.successes_needed
 
         # ── Resume: load existing data ──
         if FLAGS.resume:
@@ -213,11 +217,18 @@ def main(_):
                         transitions.append(copy.deepcopy(transition))
                     success_count += 1
                     pbar.update(1)
+                    if port_vision_active and success_count - base_success >= success_needed:
+                        break
                 trajectory = []
                 returns = 0
                 obs, info = env.reset()
     finally:
         unsubscribe_restart()
+        if port_vision_active:
+            try:
+                env.close()
+            except Exception:
+                logging.exception("Failed to close the RAM port vision environment")
         # ── Save results even if interrupted ──
         if transitions:
             if not os.path.exists("./demo_data"):

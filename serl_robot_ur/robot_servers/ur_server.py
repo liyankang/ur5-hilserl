@@ -257,6 +257,7 @@ class URStreamingController:
         self._stop_event = threading.Event()
         self._motion_lock = threading.Lock()
         self._servo_paused = bool(start_paused_until_pose)
+        self._pose_commands_allowed_since = float("-inf")
         self._thread = threading.Thread(target=self._run, daemon=True)
 
         self.rtde_c = rtde_control_cls(robot_ip)
@@ -381,7 +382,14 @@ class URStreamingController:
         return "Cleared (best effort)"
 
     def set_target_pose(self, pose, speed=None, accel=None, source: str = "policy") -> np.ndarray:
+        request_started = time.perf_counter_ns()
         pose = ensure_quat_pose(pose)
+        if not np.all(np.isfinite(pose)) or not np.any(pose[3:]):
+            raise ValueError("Pose must be finite and include a nonzero quaternion")
+        speed = None if speed is None else float(speed)
+        accel = None if accel is None else float(accel)
+        if any(value is not None and not np.isfinite(value) for value in (speed, accel)):
+            raise ValueError("Speed and acceleration must be finite")
         state = self.get_state()
         current_pose = state["pose"]
         self.logger.debug(
@@ -393,12 +401,14 @@ class URStreamingController:
             _optional_or_default(accel, self.target_accel),
         )
         with self._lock:
+            if request_started <= self._pose_commands_allowed_since:
+                raise RuntimeError("TCP target requires a fresh pose request after motion hold is confirmed")
             self._direct_force_command = None
             self.target_pose = pose
             if speed is not None:
-                self.target_speed = float(speed)
+                self.target_speed = speed
             if accel is not None:
-                self.target_accel = float(accel)
+                self.target_accel = accel
             if source == "policy":
                 self.last_policy_target_time = time.monotonic()
             if self._servo_paused and self.start_paused_until_pose and source == "policy":
@@ -482,12 +492,16 @@ class URStreamingController:
             self.logger.warning("move_joints skipped: disable_motion=True")
             return np.asarray(current_q, dtype=np.float64)
         with self._motion_lock:
-            self._servo_paused = True
+            with self._lock:
+                was_paused = self._servo_paused
+                self._servo_paused = True
             try:
                 self.stop_servo()
                 _call_optional(self.rtde_c, ["moveJ"], q.tolist(), speed, accel)
             finally:
-                self._servo_paused = False
+                with self._lock:
+                    # Preserve a hold unless a fresh policy pose resumed streaming.
+                    self._servo_paused = was_paused and self._servo_paused
 
         state = self.get_state()
         with self._lock:
@@ -591,6 +605,33 @@ class URStreamingController:
         _call_optional(self.rtde_c, ["stopL"])
         _call_optional(self.rtde_c, ["speedStop"])
 
+    def hold(self) -> None:
+        """Stop streaming motion until a fresh policy pose arrives."""
+        with self._motion_lock:
+            with self._lock:
+                self._servo_paused = True
+                self.start_paused_until_pose = False
+                self._pose_commands_allowed_since = float("inf")
+                self._direct_force_command = None
+                self.last_policy_target_time = 0.0
+
+            stop_method = "forceModeStop" if self.controller_mode == "forcemode" else "servoStop"
+            stop_confirmed = False
+            try:
+                stop_confirmed = _call_optional(self.rtde_c, [stop_method]) is True
+                if not stop_confirmed:
+                    raise RuntimeError(f"RTDE did not confirm {stop_method}")
+                self._force_mode_active = False
+            finally:
+                with self._lock:
+                    # Discard commands received while the RTDE stop was in progress.
+                    self._direct_force_command = None
+                    self.last_policy_target_time = 0.0
+                    self.start_paused_until_pose = stop_confirmed
+                    if stop_confirmed:
+                        self._pose_commands_allowed_since = time.perf_counter_ns()
+        self.logger.info("motion_held until_next_policy_pose")
+
     def _update_axis_clip_params(self, params, prefix, current_pos, current_neg):
         updated = False
         new_pos = np.array(current_pos, dtype=np.float64)
@@ -646,14 +687,15 @@ class URStreamingController:
                 continue
 
             cycle_start = time.monotonic()
-            with self._lock:
-                target_pose = self.target_pose.copy()
-                speed = self.target_speed
-                accel = self.target_accel
-                direct_force = self._direct_force_command
-
             state = self.get_state()
             with self._motion_lock:
+                with self._lock:
+                    if self._servo_paused:
+                        continue
+                    target_pose = self.target_pose.copy()
+                    speed = self.target_speed
+                    accel = self.target_accel
+                    direct_force = self._direct_force_command
                 period = _call_optional(self.rtde_c, ["initPeriod"])
                 if self.controller_mode == "forcemode":
                     if direct_force is not None and time.monotonic() >= direct_force["expires_at"]:
@@ -817,6 +859,15 @@ def create_app(
         except Exception as exc:
             app_logger.exception("route_pose failed id=%s", _request_id())
             return f"Error: {exc}", 500
+
+    @app.route("/hold", methods=["POST"])
+    def hold():
+        try:
+            robot_backend.hold()
+            return jsonify({"status": "held"})
+        except Exception as exc:
+            app_logger.exception("route_hold failed id=%s", _request_id())
+            return jsonify({"error": str(exc)}), 503
 
     @app.route("/movel_async", methods=["POST"])
     def movel_async():

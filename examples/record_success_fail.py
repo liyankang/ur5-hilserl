@@ -1,4 +1,5 @@
 import copy
+import logging
 import os
 import sys
 import time
@@ -81,11 +82,14 @@ def _check_target_reached(base_env, target_pose):
 
 
 def main(_):
+    if FLAGS.exp_name == "ram_insertion" and FLAGS.auto and os.getenv("RAM_PORT_VISION_CONFIG"):
+        raise ValueError("Use manually labelled samples when RAM port vision is active")
     global _auto_mode, _kb_interrupted
 
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
     config = CONFIG_MAPPING[FLAGS.exp_name]()
     env = config.get_environment(fake_env=False, save_video=False, classifier=False)
+    port_vision_active = getattr(env.unwrapped, "port_approach", None) is not None
 
     # Register our keyboard handler
     unsub_kb = TERMINAL_KEYBOARD_HUB.register(_kb_handler)
@@ -102,8 +106,6 @@ def main(_):
         print(f"Found KeyBoardIntervention wrapper")
     else:
         print(f"WARNING: KeyBoardIntervention wrapper not found!")
-
-    obs, _ = env.reset()
 
     successes = []
     failures = []
@@ -125,7 +127,6 @@ def main(_):
             print(f"Resumed {len(failures)} failures from {failure_files[-1]}")
 
     pbar = tqdm(total=success_needed, initial=len(successes))
-    target_pose = env.unwrapped._TARGET_POSE
     base_count = len(successes)  # number of successes loaded from resume
 
     print("\n" + "=" * 60)
@@ -136,6 +137,8 @@ def main(_):
     print("=" * 60 + "\n")
 
     try:
+        obs, _ = env.reset()
+        target_pose = env.unwrapped._TARGET_POSE
         while (len(successes) - base_count) < success_needed:
 
             # ════════════════ AUTO MODE ════════════════
@@ -233,9 +236,16 @@ def main(_):
                         successes.append(failures.pop())
                         pbar.update(1)
                         _key_times.pop(" ", None)
+                    if port_vision_active and len(successes) - base_count >= success_needed:
+                        break
                     obs, _ = env.reset()
     finally:
         unsub_kb()
+        if port_vision_active:
+            try:
+                env.close()
+            except Exception:
+                logging.exception("Failed to close the RAM port vision environment")
         # ── Save results even if interrupted ──
         if successes or failures:
             if not os.path.exists("./classifier_data"):

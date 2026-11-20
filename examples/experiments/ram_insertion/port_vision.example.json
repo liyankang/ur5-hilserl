@@ -1,0 +1,34 @@
+{
+  "approach_z_m": null,
+  "fixed": {
+    "camera": "global_2",
+    "image": null,
+    "template_roi": null,
+    "roi": null,
+    "min_score": 0.8,
+    "min_peak_gap": 0.08,
+    "max_fit_error_m": 0.005,
+    "samples": [
+      {"pixel_xy": [null, null], "base_xy_m": [null, null]},
+      {"pixel_xy": [null, null], "base_xy_m": [null, null]},
+      {"pixel_xy": [null, null], "base_xy_m": [null, null]},
+      {"pixel_xy": [null, null], "base_xy_m": [null, null]}
+    ]
+  },
+  "wrist": {
+    "camera": "wrist",
+    "image": null,
+    "template_roi": null,
+    "roi": null,
+    "min_score": 0.8,
+    "min_peak_gap": 0.08,
+    "reference_tcp_xy_m": [null, null],
+    "max_fit_error_px": 2.0,
+    "samples": [
+      {"pixel_xy": [null, null], "tcp_xy_m": [null, null]},
+      {"pixel_xy": [null, null], "tcp_xy_m": [null, null]},
+      {"pixel_xy": [null, null], "tcp_xy_m": [null, null]},
+      {"pixel_xy": [null, null], "tcp_xy_m": [null, null]}
+    ]
+  }
+}

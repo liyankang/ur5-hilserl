@@ -1,0 +1,119 @@
+{
+  "approach_z_m": -0.06910904643205881,
+  "fixed": {
+    "camera": "global_2",
+    "image": "fixed_ref.png",
+    "template_roi": [
+      664,
+      170,
+      98,
+      86
+    ],
+    "roi": null,
+    "min_score": 0.8,
+    "min_peak_gap": 0.08,
+    "max_fit_error_m": 0.005,
+    "samples": [
+      {
+        "pixel_xy": [
+          null,
+          null
+        ],
+        "base_xy_m": [
+          null,
+          null
+        ]
+      },
+      {
+        "pixel_xy": [
+          null,
+          null
+        ],
+        "base_xy_m": [
+          null,
+          null
+        ]
+      },
+      {
+        "pixel_xy": [
+          null,
+          null
+        ],
+        "base_xy_m": [
+          null,
+          null
+        ]
+      },
+      {
+        "pixel_xy": [
+          null,
+          null
+        ],
+        "base_xy_m": [
+          null,
+          null
+        ]
+      }
+    ]
+  },
+  "wrist": {
+    "camera": "wrist",
+    "image": "wrist_ref.png",
+    "template_roi": [
+      361,
+      270,
+      307,
+      272
+    ],
+    "roi": null,
+    "min_score": 0.8,
+    "min_peak_gap": 0.08,
+    "reference_tcp_xy_m": [
+      0.09158800101501927,
+      -0.6520311404940976
+    ],
+    "max_fit_error_px": 2.0,
+    "samples": [
+      {
+        "pixel_xy": [
+          null,
+          null
+        ],
+        "tcp_xy_m": [
+          null,
+          null
+        ]
+      },
+      {
+        "pixel_xy": [
+          null,
+          null
+        ],
+        "tcp_xy_m": [
+          null,
+          null
+        ]
+      },
+      {
+        "pixel_xy": [
+          null,
+          null
+        ],
+        "tcp_xy_m": [
+          null,
+          null
+        ]
+      },
+      {
+        "pixel_xy": [
+          null,
+          null
+        ],
+        "tcp_xy_m": [
+          null,
+          null
+        ]
+      }
+    ]
+  }
+}

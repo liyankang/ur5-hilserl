@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from examples.experiments.ram_insertion.camera_config import RAM_CAMERAS, validate_port_camera_roles
+
 
 def _numbers(values, size, field):
     if (
@@ -172,6 +174,7 @@ def _write_new_files(files):
 
 def fit(measurements_path, output_path):
     measurements = json.loads(measurements_path.read_text(encoding="utf-8-sig"))
+    validate_port_camera_roles(measurements["fixed"]["camera"], measurements["wrist"]["camera"])
     approach_z = _numbers([measurements["approach_z_m"]], 1, "approach_z_m")[0]
     if abs(approach_z) > 2.0:
         raise ValueError("approach_z_m 超过 2 m，请检查是否误填了毫米")
@@ -181,8 +184,6 @@ def fit(measurements_path, output_path):
     wrist, wrist_png, reference = _camera_template(
         measurements["wrist"], measurements_path.parent, f"{output_path.stem}_wrist.png"
     )
-    if fixed["camera"] == wrist["camera"]:
-        raise ValueError("固定相机和腕部相机需要不同的逻辑名")
     homography, fixed_error = _fit_fixed(measurements["fixed"], fixed["roi"])
     jacobian, wrist_error = _fit_wrist(measurements["wrist"], wrist["roi"], reference)
     fixed["pixel_to_base_homography"] = homography.tolist()
@@ -296,7 +297,8 @@ def _confirm_sample_pixel(frame, matcher, template):
 
 
 def _collect_sample(side, index, device, matcher, template, approach_z, server_url):
-    print(f"\n{'固定相机' if side == 'fixed' else '腕部相机'}第 {index + 1} 组")
+    role = "固定相机" if side == "fixed" else "腕部相机"
+    print(f"\n{role}第 {index + 1} 组（{matcher.camera}，{device}）")
     if side == "fixed":
         input("摆放并固定母口，示教到该位置对应的对准 TCP，停稳后按回车记录 XY。")
     else:
@@ -328,6 +330,7 @@ def collect_samples(path, camera, sample_index, devices, server_url):
 
     original = path.read_bytes()
     measurements = json.loads(original.decode("utf-8-sig"))
+    validate_port_camera_roles(measurements["fixed"]["camera"], measurements["wrist"]["camera"])
     sides = ("fixed", "wrist") if camera == "both" else (camera,)
     pending = []
     for side in sides:
@@ -342,6 +345,9 @@ def collect_samples(path, camera, sample_index, devices, server_url):
             frame_size_wh=tuple(controls["frame_size_wh"]), roi=tuple(controls["roi"]),
             min_score=controls["min_score"], min_peak_gap=controls["min_peak_gap"],
         )
+        device = devices[side] or RAM_CAMERAS.get(matcher.camera, {}).get("video_device")
+        if device is None:
+            raise ValueError(f"相机 {matcher.camera!r} 没有配置设备路径，请指定 --{side}-device")
         samples = section.setdefault("samples", [])
         if not isinstance(samples, list):
             raise ValueError(f"{side}.samples 需要是样本列表")
@@ -360,11 +366,11 @@ def collect_samples(path, camera, sample_index, devices, server_url):
                     continue
                 except ValueError:
                     pass
-            pending.append((side, index, matcher, template, approach_z))
+            pending.append((side, index, device, matcher, template, approach_z))
 
     saved = 0
-    for side, index, matcher, template, approach_z in pending:
-        result = _collect_sample(side, index, devices[side], matcher, template, approach_z, server_url)
+    for side, index, device, matcher, template, approach_z in pending:
+        result = _collect_sample(side, index, device, matcher, template, approach_z, server_url)
         if result is None:
             break
         if path.read_bytes() != original:
@@ -420,8 +426,8 @@ def main(argv=None):
     collect_parser.add_argument("--measurements", type=Path, default=Path("port_measurements.json"))
     collect_parser.add_argument("--camera", choices=("both", "fixed", "wrist"), default="both")
     collect_parser.add_argument("--sample", type=int, help="重采指定相机的已有样本位置，从 1 开始")
-    collect_parser.add_argument("--fixed-device", default="/dev/video0")
-    collect_parser.add_argument("--wrist-device", default="/dev/video4")
+    collect_parser.add_argument("--fixed-device", help="覆盖固定相机的设备路径")
+    collect_parser.add_argument("--wrist-device", help="覆盖腕部相机的设备路径")
     collect_parser.add_argument("--server-url", default="http://127.0.0.1:5000")
     inspect_parser = subparsers.add_parser("inspect", help="从保存的图像检查定位或腕部修正")
     inspect_parser.add_argument("--config", required=True, type=Path)

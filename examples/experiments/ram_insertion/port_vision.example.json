@@ -1,7 +1,7 @@
 {
   "approach_z_m": null,
   "fixed": {
-    "camera": "global_2",
+    "camera": "wrist",
     "image": null,
     "template_roi": null,
     "roi": null,
@@ -16,7 +16,7 @@
     ]
   },
   "wrist": {
-    "camera": "wrist",
+    "camera": "global_2",
     "image": null,
     "template_roi": null,
     "roi": null,

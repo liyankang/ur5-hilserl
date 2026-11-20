@@ -1,5 +1,6 @@
 import os
 from examples.cuda_environment import configure_cuda_environment
+from examples.experiments.ram_insertion.camera_config import RAM_CAMERAS
 
 configure_cuda_environment()
 
@@ -58,21 +59,7 @@ class EnvConfig(DefaultEnvConfig):
     CONTROL_HZ = 50
     # Current UR5 RAM-insertion deployment assumes no physical gripper.
     SERVER_URL = "http://127.0.0.1:5000/"
-    CAMERAS = {
-        # USB 相机只需要写摄像头 ID，一般 0 或 1，不需要序列号
-        "global_1": {
-            "video_device": "/dev/video2",
-            "dim": (1280, 720),
-        },
-        "wrist": {
-            "video_device": "/dev/video4",
-            "dim": (1280, 720),
-        },
-        "global_2": {
-            "video_device": "/dev/video0",
-            "dim": (1280, 720),
-        },
-    }
+    CAMERAS = RAM_CAMERAS
 
     REALSENSE_CAMERAS = CAMERAS
 

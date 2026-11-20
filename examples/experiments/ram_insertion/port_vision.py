@@ -9,6 +9,8 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from examples.experiments.ram_insertion.camera_config import validate_port_camera_roles
+
 
 class PortVisionError(ValueError):
     """The calibration is invalid or the current frame has no reliable match."""
@@ -157,8 +159,11 @@ class PortVision:
         except KeyError as exc:
             raise PortVisionError(f"Missing vision calibration field {exc}") from exc
 
-        if fixed.camera == wrist.camera:
-            raise PortVisionError("Fixed and wrist views must use separate cameras")
+        try:
+            validate_port_camera_roles(fixed.camera, wrist.camera)
+        except ValueError as exc:
+            raise PortVisionError(str(exc)) from exc
+
         if np.linalg.matrix_rank(homography) != 3 or np.linalg.matrix_rank(jacobian) != 2:
             raise PortVisionError("Fixed homography and wrist pixel Jacobian must be nonsingular")
         x, y, width, height = wrist.roi

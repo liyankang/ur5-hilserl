@@ -30,7 +30,7 @@ class RamPortVisionTest(unittest.TestCase):
         self.assertTrue(cv2.imwrite(str(self.path / "wrist.png"), self.frame(wrist_origin)))
         roi = [0, 0, 160, 120]
         fixed = {
-            "camera": "global_2",
+            "camera": "wrist",
             "image": "fixed.png",
             "template_roi": [25, 26, 11, 9],
             "roi": roi,
@@ -40,7 +40,7 @@ class RamPortVisionTest(unittest.TestCase):
             ],
         }
         wrist = {
-            "camera": "wrist",
+            "camera": "global_2",
             "image": "wrist.png",
             "template_roi": [75, 56, 11, 9],
             "roi": roi,

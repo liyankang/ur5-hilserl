@@ -67,7 +67,7 @@ def create_classifier(
     }
     encoder_def = EncodingWrapper(
         encoder=encoders,
-        # USB固定工具默认只用图像判断成功，避免把已知坐标当成插入证据。
+        # 纯图像模式直接用相机特征判断插入是否成功。
         use_proprio=use_proprio,
         enable_stacking=True,
         image_keys=image_keys,

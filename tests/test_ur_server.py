@@ -271,30 +271,28 @@ class URStreamingControllerHoldTest(unittest.TestCase):
 
     def test_pose_request_already_processing_cannot_resume_after_hold(self):
         controller = self.make_controller(SimpleNamespace(servoStop=lambda: True), mode="servo")
-        state = controller.get_state()
 
-        def hold_before_target_update():
+        def hold_before_target_update(pose):
             controller.hold()
-            return state
+            return ensure_quat_pose(pose)
 
-        with patch.object(controller, "get_state", side_effect=hold_before_target_update):
+        with patch("serl_robot_ur.robot_servers.ur_server.ensure_quat_pose", side_effect=hold_before_target_update):
             with self.assertRaisesRegex(RuntimeError, "motion hold"):
                 controller.set_target_pose(self.pose, source="policy")
 
         self.assertTrue(controller._servo_paused)
 
-    def test_control_loop_checks_hold_after_reading_state(self):
+    def test_control_loop_checks_hold_before_dispatch(self):
         servo_l = Mock(return_value=True)
         servo_stop = Mock(return_value=True)
         controller = self.make_controller(SimpleNamespace(servoL=servo_l, servoStop=servo_stop), mode="servo")
-        state = controller.get_state()
 
-        def hold_after_state_read():
+        def hold_during_safety_check():
             controller.hold()
             controller._stop_event.set()
-            return state
+            return True
 
-        with patch.object(controller, "get_state", side_effect=hold_after_state_read):
+        with patch.object(controller, "_check_safety", side_effect=hold_during_safety_check):
             controller._run()
 
         servo_stop.assert_called_once_with()
@@ -303,17 +301,15 @@ class URStreamingControllerHoldTest(unittest.TestCase):
     def test_control_loop_discards_old_target_when_hold_resumes_before_dispatch(self):
         servo_l = Mock(return_value=True)
         controller = self.make_controller(SimpleNamespace(servoL=servo_l, servoStop=lambda: True), mode="servo")
-        state = controller.get_state()
         controller.set_target_pose([0.1, *self.pose[1:]])
 
-        def hold_and_resume_during_state_read():
-            if not controller._stop_event.is_set():
-                controller._stop_event.set()
-                controller.hold()
-                controller.set_target_pose(self.pose)
-            return state
+        def hold_and_resume_during_safety_check():
+            controller._stop_event.set()
+            controller.hold()
+            controller.set_target_pose(self.pose)
+            return True
 
-        with patch.object(controller, "get_state", side_effect=hold_and_resume_during_state_read):
+        with patch.object(controller, "_check_safety", side_effect=hold_and_resume_during_safety_check):
             controller._run()
 
         servo_l.assert_called_once()

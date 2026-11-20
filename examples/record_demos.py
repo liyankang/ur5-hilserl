@@ -11,17 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import os
-import logging
 from tqdm import tqdm
 import numpy as np
 import copy
 import pickle as pkl
 import datetime
 from absl import app, flags
-import time
 import glob
-
-from scipy.spatial.transform import Rotation as Rot
 
 from experiments.mappings import CONFIG_MAPPING
 from ur_env.utils.terminal_keyboard import TERMINAL_KEYBOARD_HUB
@@ -46,11 +42,6 @@ def main(_):
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
     config = CONFIG_MAPPING[FLAGS.exp_name]()
     env = config.get_environment(fake_env=False, save_video=False, classifier=False)
-<<<<<<< HEAD
-    port_vision_active = getattr(env.unwrapped, "port_approach", None) is not None
-=======
-    validate_action_space(config, env)
->>>>>>> bfceff79cbfcd986446dd23474f8b68bbd2040f8
     restart_requested = False
     success_requested = False
     failure_requested = False
@@ -73,30 +64,31 @@ def main(_):
     success_needed = FLAGS.successes_needed
     resume_path = None
 
-    transitions = []
-    success_count = 0
-    success_needed = FLAGS.successes_needed
     try:
-        obs, info = env.reset()
-        print("Reset done")
-
+        validate_action_space(config, env)
         # ── Resume: load existing data ──
         if FLAGS.resume:
             data_dir = "./demo_data"
             demo_files = sorted(glob.glob(f"{data_dir}/{FLAGS.exp_name}_*demos*.pkl"), key=os.path.getmtime)
             if demo_files:
-                resume_path = demo_files[-1]
                 with open(demo_files[-1], "rb") as f:
-                    transitions = pkl.load(f)
-                for transition in transitions:
-                    validate_transition_shapes(transition, env.observation_space, env.action_space, resume_path)
+                    resumed_transitions = pkl.load(f)
+                for transition in resumed_transitions:
+                    validate_transition_shapes(transition, env.observation_space, env.action_space, demo_files[-1])
+                transitions = resumed_transitions
+                resume_path = demo_files[-1]
                 success_count = len([t for t in transitions if t.get("infos", {}).get("succeed", False)])
                 print(f"Resumed {len(transitions)} transitions ({success_count} successes) from {demo_files[-1]}")
+
+        if success_count >= success_needed:
+            return
+        obs, info = env.reset()
+        print("Reset done")
 
         pbar = tqdm(total=success_needed, initial=success_count)
         trajectory = []
         returns = 0
-        
+
         while success_count < success_needed:
             if restart_requested:
                 restart_requested = False
@@ -118,7 +110,7 @@ def main(_):
                 # Restore terminal for tqdm/print output
                 TERMINAL_KEYBOARD_HUB.suspend()
 
-                # 自动控制仅产生动作，绝不根据“接近坐标”把 USB 标成成功。
+                # 根据环境终态或人工确认标记成功。复位或失败请求会丢弃本回合。
                 if trajectory and not restart_requested and not failure_requested and (
                     trajectory[-1]["infos"].get("succeed", False) or success_requested
                 ):
@@ -132,6 +124,8 @@ def main(_):
                         transitions.append(copy.deepcopy(transition))
                     success_count += 1
                     pbar.update(1)
+                    if success_count >= success_needed:
+                        break
                 elif failure_requested:
                     failure_requested = False
                     pbar.set_description("Episode marked as failure")
@@ -176,7 +170,7 @@ def main(_):
                 actions = info["intervene_action"]
             transition = make_transition(obs, actions, next_obs, rew, done, truncated, info)
             trajectory.append(transition)
-            
+
             pbar.set_description(f"Return: {returns}")
 
             obs = next_obs
@@ -186,42 +180,24 @@ def main(_):
                         transitions.append(copy.deepcopy(transition))
                     success_count += 1
                     pbar.update(1)
-                    if port_vision_active and success_count - base_success >= success_needed:
+                    if success_count >= success_needed:
                         break
                 trajectory = []
                 returns = 0
                 obs, info = env.reset()
     finally:
         unsubscribe_restart()
-<<<<<<< HEAD
-        if port_vision_active:
-            try:
-                env.close()
-            except Exception:
-                logging.exception("Failed to close the RAM port vision environment")
-        # ── Save results even if interrupted ──
-        if transitions:
-            if not os.path.exists("./demo_data"):
-                os.makedirs("./demo_data")
-            uuid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            file_name = f"./demo_data/{FLAGS.exp_name}_{success_needed}_demos_{uuid}.pkl"
-            with open(file_name, "wb") as f:
-                pkl.dump(transitions, f)
-=======
         try:
+            env.close()
+        finally:
             # ── Save results even if interrupted ──
             if transitions:
-                if not os.path.exists("./demo_data"):
-                    os.makedirs("./demo_data")
-                uuid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                file_name = resume_path or f"./demo_data/{FLAGS.exp_name}_{success_needed}_demos_{uuid}.pkl"
+                stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                file_name = resume_path or f"./demo_data/{FLAGS.exp_name}_{success_needed}_demos_{stamp}.pkl"
                 save_pickle(file_name, transitions)
->>>>>>> bfceff79cbfcd986446dd23474f8b68bbd2040f8
                 print(f"\nsaved {len(transitions)} transitions ({success_count} successes) to {file_name}")
             else:
                 print("\nNo transitions collected, nothing saved.")
-        finally:
-            env.close()
 
 if __name__ == "__main__":
     app.run(main)

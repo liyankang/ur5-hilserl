@@ -403,18 +403,7 @@ class URStreamingController:
             return "Cleared (best effort)"
 
     def set_target_pose(self, pose, speed=None, accel=None, source: str = "policy") -> np.ndarray:
-<<<<<<< HEAD
         request_started = time.perf_counter_ns()
-        pose = ensure_quat_pose(pose)
-        if not np.all(np.isfinite(pose)) or not np.any(pose[3:]):
-            raise ValueError("Pose must be finite and include a nonzero quaternion")
-        speed = None if speed is None else float(speed)
-        accel = None if accel is None else float(accel)
-        if any(value is not None and not np.isfinite(value) for value in (speed, accel)):
-            raise ValueError("Speed and acceleration must be finite")
-        state = self.get_state()
-        current_pose = state["pose"]
-=======
         try:
             pose = ensure_quat_pose(pose)
         except (ValueError, TypeError) as exc:
@@ -426,8 +415,11 @@ class URStreamingController:
             if self._safety_guard is not None:
                 self._trip_safety("Invalid Cartesian target pose")
             raise ValueError("Target pose must be finite and have a nonzero quaternion")
+        speed = None if speed is None else float(speed)
+        accel = None if accel is None else float(accel)
+        if any(value is not None and not np.isfinite(value) for value in (speed, accel)):
+            raise ValueError("Speed and acceleration must be finite")
         current_pose = self.last_state.get("pose", pose)
->>>>>>> bfceff79cbfcd986446dd23474f8b68bbd2040f8
         self.logger.debug(
             "set_target_pose source=%s %s %s speed=%s accel=%s",
             source,
@@ -436,25 +428,9 @@ class URStreamingController:
             _optional_or_default(speed, self.target_speed),
             _optional_or_default(accel, self.target_accel),
         )
-<<<<<<< HEAD
-        with self._lock:
+        with self._motion_lock:
             if request_started <= self._pose_commands_allowed_since:
                 raise RuntimeError("TCP target requires a fresh pose request after motion hold is confirmed")
-            self._direct_force_command = None
-            self.target_pose = pose
-            if speed is not None:
-                self.target_speed = speed
-            if accel is not None:
-                self.target_accel = accel
-            if source == "policy":
-                self.last_policy_target_time = time.monotonic()
-            if self._servo_paused and self.start_paused_until_pose and source == "policy":
-                self._servo_paused = False
-                self.start_paused_until_pose = False
-                self.logger.info("motion_resumed_after_first_pose")
-            return self.target_pose.copy()
-=======
-        with self._motion_lock:
             if self._safety_guard is not None:
                 if not self._check_safety():
                     raise SafetyViolation(f"Robot safety stop is latched: {self._safety_guard.reason}")
@@ -467,16 +443,19 @@ class URStreamingController:
                 self._direct_force_command = None
                 self.target_pose = pose
                 if speed is not None:
-                    self.target_speed = float(speed)
+                    self.target_speed = speed
                 if accel is not None:
-                    self.target_accel = float(accel)
+                    self.target_accel = accel
                 if source == "policy":
                     self.last_policy_target_time = time.monotonic()
-                if self._safety_guard is not None or (self._servo_paused and self.start_paused_until_pose and source == "policy"):
+                if self._servo_paused and (
+                    (self.start_paused_until_pose and source == "policy")
+                    or (not self.start_paused_until_pose and self._safety_guard is not None)
+                ):
                     self._servo_paused = False
                     self.start_paused_until_pose = False
+                    self.logger.info("motion_resumed_after_first_pose")
                 return self.target_pose.copy()
->>>>>>> bfceff79cbfcd986446dd23474f8b68bbd2040f8
 
     def set_force_mode(self, command: dict[str, Any]) -> dict[str, Any]:
         if self.controller_mode != "forcemode":
@@ -798,80 +777,6 @@ class URStreamingController:
                 raise SafetyViolation("Invalid raw TCP wrench feedback")
         return pose, wrench
 
-<<<<<<< HEAD
-            cycle_start = time.monotonic()
-            state = self.get_state()
-            with self._motion_lock:
-                with self._lock:
-                    if self._servo_paused:
-                        continue
-                    target_pose = self.target_pose.copy()
-                    speed = self.target_speed
-                    accel = self.target_accel
-                    direct_force = self._direct_force_command
-                period = _call_optional(self.rtde_c, ["initPeriod"])
-                if self.controller_mode == "forcemode":
-                    if direct_force is not None and time.monotonic() >= direct_force["expires_at"]:
-                        with self._lock:
-                            if self._direct_force_command is direct_force:
-                                self._direct_force_command = None
-                                self.last_policy_target_time = 0.0
-                        direct_force = None
-                    policy_is_fresh = direct_force is not None or (
-                        (time.monotonic() - self.last_policy_target_time) <= self.force_mode_idle_timeout
-                    )
-                    if not policy_is_fresh:
-                        if self._force_mode_active:
-                            _call_optional(self.rtde_c, ["forceModeStop"])
-                            self._force_mode_active = False
-                        if period is not None:
-                            _call_optional(self.rtde_c, ["waitPeriod"], period)
-                        remaining = dt - (time.monotonic() - cycle_start)
-                        if remaining > 0:
-                            time.sleep(remaining)
-                        continue
-                    wrench = (
-                        np.asarray(direct_force["wrench"], dtype=np.float64)
-                        if direct_force is not None
-                        else self._compute_force_mode_wrench(state, target_pose)
-                    )
-                    if direct_force is None and np.allclose(wrench, 0.0, atol=1e-6):
-                        if self._force_mode_active:
-                            _call_optional(self.rtde_c, ["forceModeStop"])
-                            self._force_mode_active = False
-                        if period is not None:
-                            _call_optional(self.rtde_c, ["waitPeriod"], period)
-                        remaining = dt - (time.monotonic() - cycle_start)
-                        if remaining > 0:
-                            time.sleep(remaining)
-                        continue
-                    _call_optional(
-                        self.rtde_c,
-                        ["forceMode"],
-                        direct_force["task_frame"] if direct_force is not None else self.force_mode_task_frame.tolist(),
-                        direct_force["selection_vector"] if direct_force is not None else self.force_mode_selection_vector.tolist(),
-                        wrench.tolist(),
-                        direct_force["type"] if direct_force is not None else 2,
-                        direct_force["limits"] if direct_force is not None else self.force_mode_limits.tolist(),
-                    )
-                    self._force_mode_active = True
-                else:
-                    target_rotvec = quat_pose_to_rotvec_pose(target_pose).tolist()
-                    servo_result = _call_optional(
-                        self.rtde_c,
-                        ["servoL"],
-                        target_rotvec,
-                        speed,
-                        accel,
-                        dt,
-                        self.lookahead_time,
-                        self.servo_gain,
-                    )
-                    if servo_result is None:
-                        _call_optional(self.rtde_c, ["moveL"], target_rotvec, speed, accel)
-                if period is not None:
-                    _call_optional(self.rtde_c, ["waitPeriod"], period)
-=======
     def _trip_safety(self, reason):
         with self._motion_lock:
             if self._safety_guard is not None:
@@ -911,6 +816,7 @@ class URStreamingController:
             self._safety_stop_sent = False
             with self._lock:
                 self.target_pose = ensure_quat_pose(pose)
+                self._pose_commands_allowed_since = time.perf_counter_ns()
             # 新配置安装后等待第一条合法笛卡尔目标，不自动追踪旧目标。
             return candidate.status()
 
@@ -927,6 +833,7 @@ class URStreamingController:
             self._safety_stop_sent = False
             with self._lock:
                 self.target_pose = ensure_quat_pose(pose)
+                self._pose_commands_allowed_since = time.perf_counter_ns()
             return self._safety_guard.status()
 
     def hold_position(self):
@@ -941,6 +848,7 @@ class URStreamingController:
                 raise SafetyViolation(str(exc)) from exc
             with self._lock:
                 self.target_pose = ensure_quat_pose(pose)
+                self._pose_commands_allowed_since = time.perf_counter_ns()
                 return self.target_pose.copy()
 
     def _servo_cycle(self, dt):
@@ -1004,7 +912,6 @@ class URStreamingController:
             selection = direct["selection_vector"]
             limits = direct["limits"]
             mode = direct["type"]
->>>>>>> bfceff79cbfcd986446dd23474f8b68bbd2040f8
 
         period = _call_optional(self.rtde_c, ["initPeriod"])
         result = _call_optional(self.rtde_c, ["forceMode"], task_frame, selection,
@@ -1136,14 +1043,6 @@ def create_app(
             return jsonify({"error": str(exc)}), 409
         except (ValueError, TypeError) as exc:
             return jsonify({"error": str(exc)}), 400
-
-    @app.route("/hold", methods=["POST"])
-    def hold():
-        try:
-            target = robot_backend.hold_position()
-            return jsonify({"status": "Holding", "target_pose": _to_jsonable(target)})
-        except (ValueError, SafetyViolation) as exc:
-            return jsonify({"error": str(exc)}), 409
 
     @app.route("/pose", methods=["POST"])
     def pose():

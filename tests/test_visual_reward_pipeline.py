@@ -30,8 +30,8 @@ class VisualRewardPipelineTests(unittest.TestCase):
         sample = {"infos": {"episode_id": "episode-1"}}
         self.assertEqual(sample_group(sample, "positive.pkl"), sample_group(sample, "negative.pkl"))
         self.assertEqual(
-            sample_group({}, "usb_insertion_20_success_images_2026-11-17_10-00-00.pkl"),
-            sample_group({}, "usb_insertion_failure_images_2026-11-17_10-00-00.pkl"),
+            sample_group({}, "ram_insertion_20_success_images_2026-11-17_10-00-00.pkl"),
+            sample_group({}, "ram_insertion_failure_images_2026-11-17_10-00-00.pkl"),
         )
 
     def test_split_keeps_complete_episodes_and_both_labels_in_each_partition(self):
@@ -67,13 +67,13 @@ class VisualRewardPipelineTests(unittest.TestCase):
             checkpoint = path / "checkpoint_150"
             checkpoint.write_bytes(b"saved classifier parameters")
             report = dict(validation_metrics([1, 0], [0.99, 0.01], 0.95),
-                          exp_name="usb_insertion", image_keys=["wrist", "global_2"],
+                          exp_name="ram_insertion", image_keys=["wrist", "global_2"],
                           use_proprio=False, threshold=0.95, checkpoint_step=150,
                           checkpoint_sha256=checkpoint_fingerprint(checkpoint),
                           split_method="grouped_by_episode_or_capture")
             report_path = path / "validation.json"
             report_path.write_text(json.dumps(report), encoding="utf-8")
-            args = (directory, "usb_insertion", ["wrist", "global_2"], False, 0.95)
+            args = (directory, "ram_insertion", ["wrist", "global_2"], False, 0.95)
             self.assertTrue(validate_classifier_artifact(*args)["passed"])
             for field, invalid in (("validation_accuracy", 0.95), ("positive_accuracy", 0.95),
                                    ("negative_accuracy", 0.95), ("passed", False),
@@ -158,8 +158,8 @@ class VisualRewardPipelineTests(unittest.TestCase):
             config = types.SimpleNamespace(classifier_data_dir=directory,
                                            get_environment=lambda **kwargs: env)
             namespace = dict(
-                FLAGS=types.SimpleNamespace(auto=False, successes_needed=1, resume=False, exp_name="usb_insertion"),
-                CONFIG_MAPPING={"usb_insertion": lambda: config},
+                FLAGS=types.SimpleNamespace(auto=False, successes_needed=1, resume=False, exp_name="ram_insertion"),
+                CONFIG_MAPPING={"ram_insertion": lambda: config},
                 TERMINAL_KEYBOARD_HUB=types.SimpleNamespace(register=lambda handler: lambda: None),
                 _requests={"success": False, "failure": False, "reset": False}, _key_times={},
                 _kb_handler=lambda key: None, np=np, Path=Path, glob=glob, os=os,

@@ -35,13 +35,13 @@ class DictSpace:
 
 
 def spaces():
-    observations = DictSpace({"state": Box(shape=(1, 18)),
+    observations = DictSpace({"state": Box(shape=(1, 19)),
                               "wrist": Box(0, 255, shape=(1, 2, 2, 3), dtype=np.uint8)})
     return observations, Box(shape=(6,))
 
 
 def transition():
-    obs = {"state": np.zeros((1, 18)), "wrist": np.zeros((1, 2, 2, 3), dtype=np.uint8)}
+    obs = {"state": np.zeros((1, 19)), "wrist": np.zeros((1, 2, 2, 3), dtype=np.uint8)}
     return make_transition(obs, np.zeros(6), obs, 0, False, True, {})
 
 
@@ -125,7 +125,7 @@ class FixedToolTrainingTests(unittest.TestCase):
                 if field == "actions":
                     bad["actions"] = np.zeros(7)
                 elif field == "state":
-                    bad["observations"]["state"] = np.zeros((1, 19))
+                    bad["observations"]["state"] = np.zeros((1, 18))
                 else:
                     bad["next_observations"]["wrist"] = np.zeros((2, 2, 3))
                 with self.assertRaisesRegex(ValueError, "recollect demos"):
@@ -134,29 +134,29 @@ class FixedToolTrainingTests(unittest.TestCase):
     def test_schema_records_input_output_and_rejects_legacy_checkpoints(self):
         obs_space, action_space = spaces()
         env = types.SimpleNamespace(observation_space=obs_space, action_space=action_space)
-        config = types.SimpleNamespace(action_dim=6, proprio_keys=["tcp_pose", "tcp_vel", "tcp_force", "tcp_torque"],
+        config = types.SimpleNamespace(action_dim=6, proprio_keys=["tcp_pose", "tcp_vel", "tcp_force", "tcp_torque", "gripper_pose"],
                                        setup_mode="single-arm-fixed-gripper")
         with tempfile.TemporaryDirectory() as directory:
-            ensure_training_schema(config, env, directory, "usb_insertion")
+            ensure_training_schema(config, env, directory, "ram_insertion")
             payload = json.loads((Path(directory) / "training_schema.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["action_shape"], [6])
-            self.assertEqual(payload["observation_shapes"]["state"], [1, 18])
-            ensure_training_schema(config, env, directory, "usb_insertion", has_checkpoint=True)
+            self.assertEqual(payload["observation_shapes"]["state"], [1, 19])
+            ensure_training_schema(config, env, directory, "ram_insertion", has_checkpoint=True)
             with self.assertRaisesRegex(ValueError, "schema mismatch"):
-                ensure_training_schema(config, env, directory, "usb_insertion", has_checkpoint=True, algorithm="bc")
-            config.proprio_keys.append("gripper_pose")
+                ensure_training_schema(config, env, directory, "ram_insertion", has_checkpoint=True, algorithm="bc")
+            config.proprio_keys.remove("gripper_pose")
             with self.assertRaisesRegex(ValueError, "schema mismatch"):
-                ensure_training_schema(config, env, directory, "usb_insertion", has_checkpoint=True)
+                ensure_training_schema(config, env, directory, "ram_insertion", has_checkpoint=True)
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "schema is unverified"):
-                ensure_training_schema(config, env, directory, "usb_insertion", has_checkpoint=True)
+                ensure_training_schema(config, env, directory, "ram_insertion", has_checkpoint=True)
 
     def test_actual_checkpoint_parameter_shapes_are_checked(self):
-        expected = {"actor": {"head": np.zeros((32, 6))}, "encoder": np.zeros((18, 32))}
+        expected = {"actor": {"head": np.zeros((32, 6))}, "encoder": np.zeros((19, 32))}
         validate_parameter_shapes(expected, copy.deepcopy(expected))
-        for wrong in ({"actor": {"head": np.zeros((32, 7))}, "encoder": np.zeros((18, 32))},
-                      {"actor": {"head": np.zeros((32, 6))}, "encoder": np.zeros((19, 32))}):
-            with self.assertRaisesRegex(ValueError, "incompatible"):
+        for wrong in ({"actor": {"head": np.zeros((32, 7))}, "encoder": np.zeros((19, 32))},
+                      {"actor": {"head": np.zeros((32, 6))}, "encoder": np.zeros((18, 32))}):
+            with self.assertRaisesRegex(ValueError, "network parameter shapes"):
                 validate_parameter_shapes(expected, wrong)
 
     def test_auto_translation_does_not_create_rotation_at_offset_tcp(self):

@@ -60,7 +60,7 @@ def validate_action_space(config, env):
                 "use 3 or 6 Cartesian dimensions without a gripper output."
             )
         if getattr(config, "setup_mode", None) != "single-arm-fixed-gripper":
-            raise ValueError("Fixed-tool USB training requires ordinary single-arm SAC, without gripper critic/penalty.")
+            raise ValueError("Fixed-tool training requires ordinary single-arm SAC, without gripper critic/penalty.")
     return env.action_space.sample()
 
 
@@ -72,7 +72,7 @@ def _space_shapes(space):
 
 
 def validate_transition_shapes(transition, observation_space, action_space, source="data"):
-    """拒绝旧七维动作、旧十九维状态和错误相机尺寸，不静默裁剪数据。"""
+    """按当前动作和观测空间验证采集数据的形状。"""
     import numpy as np
 
     def check(value, space, field):
@@ -153,7 +153,7 @@ def validate_parameter_shapes(expected_params, restored_params, source="checkpoi
             return result
         return {prefix: tuple(value.shape) if hasattr(value, "shape") else type(value).__name__}
     if shapes(expected_params) != shapes(restored_params):
-        raise ValueError(f"{source}: network parameter shapes differ from the current action/observation schema. Use a new training directory; old gripper or 19-state models are incompatible.")
+        raise ValueError(f"{source}: network parameter shapes differ from the current action/observation schema. Use a new training directory and a compatible model.")
 
 
 def label_success(transition):

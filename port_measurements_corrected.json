@@ -1,0 +1,127 @@
+{
+  "approach_z_m": -0.0691231212211635,
+  "fixed": {
+    "camera": "wrist",
+    "image": "fixed_ref_v2.png",
+    "max_fit_error_m": 0.005,
+    "min_peak_gap": 0.08,
+    "min_score": 0.8,
+    "roi": null,
+    "samples": [
+      {
+        "base_xy_m": [
+          0.09222838020615001,
+          -0.5944608296347411
+        ],
+        "image": "port_measurements_corrected_samples/fixed_01_a32513d3.png",
+        "pixel_xy": [
+          577.0,
+          333.5
+        ]
+      },
+      {
+        "base_xy_m": [
+          0.12666559763339,
+          -0.6207305297505048
+        ],
+        "image": "port_measurements_corrected_samples/fixed_02_7e57c799.png",
+        "pixel_xy": [
+          572,
+          399
+        ]
+      },
+      {
+        "base_xy_m": [
+          0.15990718011619964,
+          -0.6472479930976073
+        ],
+        "image": "port_measurements_corrected_samples/fixed_03_2eba1e82.png",
+        "pixel_xy": [
+          566,
+          486
+        ]
+      },
+      {
+        "base_xy_m": [
+          0.11779359967102995,
+          -0.6589382848947221
+        ],
+        "image": "port_measurements_corrected_samples/fixed_04_840e5a42.png",
+        "pixel_xy": [
+          521,
+          361
+        ]
+      }
+    ],
+    "template_roi": [
+      506,
+      260,
+      143,
+      148
+    ]
+  },
+  "wrist": {
+    "camera": "global_2",
+    "image": "wrist_ref_v2.png",
+    "max_fit_error_px": 2.0,
+    "min_peak_gap": 0.08,
+    "min_score": 0.8,
+    "reference_tcp_xy_m": [
+      0.09219886834824143,
+      -0.594467126775437
+    ],
+    "roi": null,
+    "samples": [
+      {
+        "image": "port_measurements_corrected_samples/wrist_01_0cb5eed1.png",
+        "pixel_xy": [
+          686,
+          293
+        ],
+        "tcp_xy_m": [
+          0.10451583756223187,
+          -0.5956845472915026
+        ]
+      },
+      {
+        "image": "port_measurements_corrected_samples/wrist_02_1a7dd1b8.png",
+        "pixel_xy": [
+          699,
+          261
+        ],
+        "tcp_xy_m": [
+          0.1251846637496974,
+          -0.6166760165678612
+        ]
+      },
+      {
+        "image": "port_measurements_corrected_samples/wrist_03_76a9e5f4.png",
+        "pixel_xy": [
+          684,
+          254
+        ],
+        "tcp_xy_m": [
+          0.1532230094074352,
+          -0.6507570173834712
+        ]
+      },
+      {
+        "image": "port_measurements_corrected_samples/wrist_04_9f66d4e2.png",
+        "pixel_xy": [
+          694,
+          250
+        ],
+        "tcp_xy_m": [
+          0.1020174429079447,
+          -0.6611930940070745
+        ]
+      }
+    ],
+    "template_roi": [
+      620,
+      205,
+      120,
+      100
+    ]
+  }
+}

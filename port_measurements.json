@@ -3,117 +3,125 @@
   "fixed": {
     "camera": "global_2",
     "image": "fixed_ref.png",
+    "max_fit_error_m": 0.005,
+    "min_peak_gap": 0.08,
+    "min_score": 0.8,
+    "roi": null,
+    "samples": [
+      {
+        "base_xy_m": [
+          0.11765133578236613,
+          -0.6576040882056681
+        ],
+        "image": "port_measurements_samples/fixed_01_536f1264.png",
+        "pixel_xy": [
+          710,
+          294
+        ]
+      },
+      {
+        "base_xy_m": [
+          0.16599990115260366,
+          -0.6475138355848303
+        ],
+        "image": "port_measurements_samples/fixed_02_b7977e3f.png",
+        "pixel_xy": [
+          695,
+          290
+        ]
+      },
+      {
+        "base_xy_m": [
+          0.1263849380404691,
+          -0.615307091647032
+        ],
+        "image": "port_measurements_samples/fixed_03_118c6fcc.png",
+        "pixel_xy": [
+          704,
+          265
+        ]
+      },
+      {
+        "base_xy_m": [
+          0.10443451012066428,
+          -0.5895322966065469
+        ],
+        "image": "port_measurements_samples/fixed_04_17d8add3.png",
+        "pixel_xy": [
+          699,
+          286
+        ]
+      }
+    ],
     "template_roi": [
       664,
       170,
       98,
       86
-    ],
-    "roi": null,
-    "min_score": 0.8,
-    "min_peak_gap": 0.08,
-    "max_fit_error_m": 0.005,
-    "samples": [
-      {
-        "pixel_xy": [
-          null,
-          null
-        ],
-        "base_xy_m": [
-          null,
-          null
-        ]
-      },
-      {
-        "pixel_xy": [
-          null,
-          null
-        ],
-        "base_xy_m": [
-          null,
-          null
-        ]
-      },
-      {
-        "pixel_xy": [
-          null,
-          null
-        ],
-        "base_xy_m": [
-          null,
-          null
-        ]
-      },
-      {
-        "pixel_xy": [
-          null,
-          null
-        ],
-        "base_xy_m": [
-          null,
-          null
-        ]
-      }
     ]
   },
   "wrist": {
     "camera": "wrist",
     "image": "wrist_ref.png",
+    "max_fit_error_px": 2.0,
+    "min_peak_gap": 0.08,
+    "min_score": 0.8,
+    "reference_tcp_xy_m": [
+      0.09158800101501927,
+      -0.6520311404940976
+    ],
+    "roi": null,
+    "samples": [
+      {
+        "image": "port_measurements_samples/wrist_01_f1e76172.png",
+        "pixel_xy": [
+          792,
+          525
+        ],
+        "tcp_xy_m": [
+          0.10508969784638866,
+          -0.6616800979259788
+        ]
+      },
+      {
+        "image": "port_measurements_samples/wrist_02_e6213ecc.png",
+        "pixel_xy": [
+          564,
+          483
+        ],
+        "tcp_xy_m": [
+          0.16023411162158166,
+          -0.6450988879724093
+        ]
+      },
+      {
+        "image": "port_measurements_samples/wrist_03_0c7d8621.png",
+        "pixel_xy": [
+          570,
+          399
+        ],
+        "tcp_xy_m": [
+          0.12778017017618726,
+          -0.6184544716345589
+        ]
+      },
+      {
+        "image": "port_measurements_samples/wrist_04_681d316b.png",
+        "pixel_xy": [
+          575,
+          329
+        ],
+        "tcp_xy_m": [
+          0.09220927193748008,
+          -0.5944448806045333
+        ]
+      }
+    ],
     "template_roi": [
       361,
       270,
       307,
       272
-    ],
-    "roi": null,
-    "min_score": 0.8,
-    "min_peak_gap": 0.08,
-    "reference_tcp_xy_m": [
-      0.09158800101501927,
-      -0.6520311404940976
-    ],
-    "max_fit_error_px": 2.0,
-    "samples": [
-      {
-        "pixel_xy": [
-          null,
-          null
-        ],
-        "tcp_xy_m": [
-          null,
-          null
-        ]
-      },
-      {
-        "pixel_xy": [
-          null,
-          null
-        ],
-        "tcp_xy_m": [
-          null,
-          null
-        ]
-      },
-      {
-        "pixel_xy": [
-          null,
-          null
-        ],
-        "tcp_xy_m": [
-          null,
-          null
-        ]
-      },
-      {
-        "pixel_xy": [
-          null,
-          null
-        ],
-        "tcp_xy_m": [
-          null,
-          null
-        ]
-      }
     ]
   }
 }

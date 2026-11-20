@@ -57,6 +57,11 @@ def _read_image(path):
     return image
 
 
+def _template_center(roi):
+    x, y, w, h = roi
+    return np.array([x + (w - 1) / 2, y + (h - 1) / 2])
+
+
 def _camera_template(section, base_dir, template_name, *, side):
     camera = section["camera"]
     if not isinstance(camera, str) or not camera.strip():
@@ -87,8 +92,7 @@ def _camera_template(section, base_dir, template_name, *, side):
         if not 0 < value <= maximum:
             raise ValueError(f"{key} 必须大于 0 且不超过 {maximum}")
         controls[key] = float(value)
-    center = np.array([x + (w - 1) / 2, y + (h - 1) / 2])
-    return controls, template, center
+    return controls, template, _template_center((x, y, w, h))
 
 
 def _measured_pairs(samples, xy_key, roi, minimum):
@@ -110,8 +114,26 @@ def _check_error(error, threshold, units):
     return maximum
 
 
-def _fit_fixed(section, roi):
+def _pole_outside_rectangle(mapping, low, high):
+    x0, y0 = low
+    x1, y1 = high
+    corners = np.array([[x0, y0, 1], [x1, y0, 1], [x0, y1, 1], [x1, y1, 1]])
+    scales = corners @ mapping[2]
+    return np.all(scales > 1e-9) or np.all(scales < -1e-9)
+
+
+def _fit_fixed(section, roi, *, crop_to_samples=False):
     pixels, base = _measured_pairs(section["samples"], "base_xy_m", roi, 4)
+    x, y, width, height = section["template_roi"]
+    half_size = (np.array([width, height]) - 1) / 2
+    sample_low = pixels.min(axis=0)
+    sample_high = pixels.max(axis=0)
+    low = np.array(roi[:2])
+    high = low + roi[2:] - 1
+    center_low = low + half_size
+    center_high = high - half_size
+    if np.any(sample_low < center_low) or np.any(sample_high > center_high):
+        raise ValueError("有固定相机采样点过于靠近搜索框边缘，无法容纳完整模板，请核对 fixed.roi 或原图上的特征点")
     homogeneous = np.column_stack([pixels, np.ones(len(pixels))])
     zeros = np.zeros_like(homogeneous)
     design = np.vstack([
@@ -123,17 +145,26 @@ def _fit_fixed(section, roi):
     mapping, _ = cv2.findHomography(pixels, base, method=0)
     if mapping is None or not np.all(np.isfinite(mapping)) or np.linalg.matrix_rank(mapping) < 3:
         raise ValueError("固定相机单应矩阵无效")
-    x, y, width, height = roi
-    corners = np.array([
-        [x, y, 1], [x + width - 1, y, 1],
-        [x, y + height - 1, 1], [x + width - 1, y + height - 1, 1],
-    ])
-    scales = corners @ mapping[2]
-    if not (np.all(scales > 1e-9) or np.all(scales < -1e-9)):
-        raise ValueError("固定相机映射在搜索区域内存在奇异点")
+    if not _pole_outside_rectangle(mapping, sample_low, sample_high):
+        raise ValueError("固定相机奇异线穿过采样范围，请先用 relabel 核对原图上的特征点及其 TCP 对应关系")
     projected = cv2.perspectiveTransform(pixels[None], mapping)[0]
     error = _check_error(projected - base, section.get("max_fit_error_m", 0.005), "m")
-    return mapping, error
+    if _pole_outside_rectangle(mapping, center_low, center_high):
+        return mapping, error, roi
+
+    # 每个采样中心周围都需要留出完整模板。参考模板本身也要在搜索框里。
+    crop_low = np.minimum(np.floor(sample_low - half_size), [x, y]).astype(int)
+    crop_high = np.maximum(np.ceil(sample_high + half_size), [x + width - 1, y + height - 1]).astype(int)
+    if (np.any(crop_low < low) or np.any(crop_high > high)
+            or not _pole_outside_rectangle(mapping, crop_low + half_size, crop_high - half_size)):
+        raise ValueError("固定相机找不到同时覆盖全部样本和完整模板的有效搜索框，请核对原图标点和参考模板")
+    safe_roi = np.r_[crop_low, crop_high - crop_low + 1].tolist()
+    if not crop_to_samples:
+        raise ValueError(
+            f"固定相机搜索框外围有奇异点，可保留全部样本。"
+            f"使用 --fixed-roi-from-samples 拟合，或填写 fixed.roi={safe_roi}"
+        )
+    return mapping, error, safe_roi
 
 
 def _fit_wrist(section, roi, reference_pixel):
@@ -172,7 +203,7 @@ def _write_new_files(files):
         raise
 
 
-def fit(measurements_path, output_path):
+def fit(measurements_path, output_path, *, crop_fixed_roi=False):
     measurements = json.loads(measurements_path.read_text(encoding="utf-8-sig"))
     validate_port_camera_roles(measurements["fixed"]["camera"], measurements["wrist"]["camera"])
     approach_z = _numbers([measurements["approach_z_m"]], 1, "approach_z_m")[0]
@@ -184,7 +215,9 @@ def fit(measurements_path, output_path):
     wrist, wrist_png, reference = _camera_template(
         measurements["wrist"], measurements_path.parent, f"{output_path.stem}_wrist.png", side="wrist"
     )
-    homography, fixed_error = _fit_fixed(measurements["fixed"], fixed["roi"])
+    homography, fixed_error, fixed["roi"] = _fit_fixed(
+        measurements["fixed"], fixed["roi"], crop_to_samples=crop_fixed_roi
+    )
     jacobian, wrist_error = _fit_wrist(measurements["wrist"], wrist["roi"], reference)
     fixed["pixel_to_base_homography"] = homography.tolist()
     wrist["pixel_per_meter_jacobian"] = jacobian.tolist()
@@ -197,7 +230,8 @@ def fit(measurements_path, output_path):
         (output_path.parent / wrist["template"], _encode_png(wrist_png)),
         (output_path, (json.dumps(config, ensure_ascii=False, indent=2) + "\n").encode("utf-8")),
     ])
-    return {"config": str(output_path), "fixed_fit_max_error_m": fixed_error, "wrist_fit_max_error_px": wrist_error}
+    return {"config": str(output_path), "fixed_roi": fixed["roi"],
+            "fixed_fit_max_error_m": fixed_error, "wrist_fit_max_error_px": wrist_error}
 
 
 def _capture_frame(device, width, height, fps):
@@ -247,18 +281,30 @@ def _read_stationary_tcp(server_url):
     return pose
 
 
-def _confirm_sample_pixel(frame, matcher, template):
+def _sample_matcher(section, directory, side):
+    from examples.experiments.ram_insertion.port_vision import _TemplateMatcher
+
+    controls, template, _ = _camera_template(section, directory, "", side=side)
+    matcher = _TemplateMatcher(
+        camera=controls["camera"], template_gray=cv2.cvtColor(template, cv2.COLOR_BGR2GRAY),
+        frame_size_wh=tuple(controls["frame_size_wh"]), roi=tuple(controls["roi"]),
+        min_score=controls["min_score"], min_peak_gap=controls["min_peak_gap"],
+    )
+    return matcher, template
+
+
+def _confirm_sample_pixel(frame, matcher, template, *, point=None):
     from examples.experiments.ram_insertion.port_vision import PortVisionError
 
     window = "RAM sample"
     reference = "RAM reference feature"
-    try:
-        point, score, _ = matcher.match(frame)
-        point = point.tolist()
-        print(f"自动匹配得分 {score:.3f}，请核对十字标记。")
-    except PortVisionError as error:
-        print(f"{error}。请点击图中同一特征的中心。")
-        point = None
+    if point is None:
+        try:
+            point, score, _ = matcher.match(frame)
+            point = point.tolist()
+            print(f"自动匹配得分 {score:.3f}，请核对十字标记。")
+        except PortVisionError as error:
+            print(f"{error}。请点击图中同一特征的中心。")
 
     def show_point():
         preview = frame.copy()
@@ -296,19 +342,23 @@ def _confirm_sample_pixel(frame, matcher, template):
         cv2.destroyAllWindows()
 
 
-def _collect_sample(side, index, device, matcher, template, approach_z, server_url):
+def _collect_sample(side, index, device, matcher, template, approach_z, server_url, wrist_reference_xy):
     role = "固定相机" if side == "fixed" else "腕部相机"
     print(f"\n{role}第 {index + 1} 组（{matcher.camera}，{device}）")
     if side == "fixed":
-        input("摆放并固定母口，示教到该位置对应的对准 TCP，停稳后按回车记录 XY。")
+        input("摆放并固定母口，选取覆盖目标区域 XY 两个方向的位置。示教到对应对准 TCP，停稳后按回车记录 XY。")
     else:
         direction = ("+X", "−X", "+Y", "−Y")[index % 4]
-        input(f"母口保持在腕部参考位置。保持参考高度和朝向，建议相对参考点沿基座 {direction} 取点，停稳后按回车。")
+        input(f"母口保持在腕部参考位置。保持参考高度和朝向，建议相对参考点沿基座 {direction} 移动 3–5 mm，停稳后按回车。")
     pose = _read_stationary_tcp(server_url)
     if side == "fixed":
+        print(f"已读取对准 TCP，X={pose[0]:.6f} m，Y={pose[1]:.6f} m。", flush=True)
         input("保持母口固定。机械臂沿已验证的路径退出并停稳后按回车拍照。")
-    elif abs(pose[2] - approach_z) > 0.0008:
-        raise ValueError(f"腕部采样 Z={pose[2]:.6f} m，与参考高度 {approach_z:.6f} m 相差超过 0.8 mm")
+    else:
+        dx_mm, dy_mm = (pose[:2] - wrist_reference_xy) * 1000
+        print(f"相对腕部参考 TCP 的实测偏移为 ΔX={dx_mm:+.1f} mm，ΔY={dy_mm:+.1f} mm。", flush=True)
+        if abs(pose[2] - approach_z) > 0.0008:
+            raise ValueError(f"腕部采样 Z={pose[2]:.6f} m，与参考高度 {approach_z:.6f} m 相差超过 0.8 mm")
 
     width, height = matcher.frame_size_wh
     frame = _capture_frame(device, width, height, fps=10)
@@ -324,27 +374,52 @@ def _collect_sample(side, index, device, matcher, template, approach_z, server_u
     return {xy_key: pose[:2].tolist(), "pixel_xy": pixel}, frame
 
 
+def _has_measurement(sample, xy_key):
+    if not isinstance(sample, dict):
+        return False
+    try:
+        _numbers(sample.get("pixel_xy"), 2, "pixel_xy")
+        _xy_m(sample.get(xy_key), xy_key)
+    except ValueError:
+        return False
+    return True
+
+
+def _report_collection_fit(side, section, roi):
+    fixed = side == "fixed"
+    key, minimum = ("base_xy_m", 4) if fixed else ("tcp_xy_m", 2)
+    samples = section["samples"]
+    if len(samples) < minimum or not all(_has_measurement(sample, key) for sample in samples):
+        return
+    label = "固定相机" if fixed else "腕部相机"
+    try:
+        if fixed:
+            _, error, _ = _fit_fixed(section, roi)
+            summary = f"{error * 1000:.3g} mm"
+        else:
+            _, error = _fit_wrist(section, roi, _template_center(section["template_roi"]))
+            summary = f"{error:.3g} px"
+    except (ValueError, cv2.error) as error:
+        print(f"{label}已保存样本，但拟合检查需处理：{error}", flush=True)
+    else:
+        print(f"{label}拟合检查通过，样本最大残差 {summary}。", flush=True)
+
+
 def collect_samples(path, camera, sample_index, devices, server_url):
     from examples.collection_utils import _save_json
-    from examples.experiments.ram_insertion.port_vision import _TemplateMatcher
 
     original = path.read_bytes()
     measurements = json.loads(original.decode("utf-8-sig"))
     validate_port_camera_roles(measurements["fixed"]["camera"], measurements["wrist"]["camera"])
     sides = ("fixed", "wrist") if camera == "both" else (camera,)
     pending = []
+    approach_z = wrist_reference_xy = None
     for side in sides:
         section = measurements[side]
-        approach_z = None
         if side == "wrist":
             approach_z = _numbers([measurements.get("approach_z_m")], 1, "approach_z_m")[0]
-            _xy_m(section.get("reference_tcp_xy_m"), "wrist.reference_tcp_xy_m")
-        controls, template, _ = _camera_template(section, path.parent, "", side=side)
-        matcher = _TemplateMatcher(
-            camera=controls["camera"], template_gray=cv2.cvtColor(template, cv2.COLOR_BGR2GRAY),
-            frame_size_wh=tuple(controls["frame_size_wh"]), roi=tuple(controls["roi"]),
-            min_score=controls["min_score"], min_peak_gap=controls["min_peak_gap"],
-        )
+            wrist_reference_xy = _xy_m(section.get("reference_tcp_xy_m"), "wrist.reference_tcp_xy_m")
+        matcher, template = _sample_matcher(section, path.parent, side)
         device = devices[side] or RAM_CAMERAS.get(matcher.camera, {}).get("video_device")
         if device is None:
             raise ValueError(f"相机 {matcher.camera!r} 没有配置设备路径，请指定 --{side}-device")
@@ -358,19 +433,13 @@ def collect_samples(path, camera, sample_index, devices, server_url):
         xy_key = "base_xy_m" if side == "fixed" else "tcp_xy_m"
         indices = range(len(samples)) if sample_index is None else (sample_index - 1,)
         for index in indices:
-            sample = samples[index]
-            if sample_index is None and isinstance(sample, dict):
-                try:
-                    _numbers(sample.get("pixel_xy"), 2, "pixel_xy")
-                    _xy_m(sample.get(xy_key), xy_key)
-                    continue
-                except ValueError:
-                    pass
-            pending.append((side, index, device, matcher, template, approach_z))
+            if sample_index is None and _has_measurement(samples[index], xy_key):
+                continue
+            pending.append((side, index, device, matcher, template))
 
     saved = 0
-    for side, index, device, matcher, template, approach_z in pending:
-        result = _collect_sample(side, index, device, matcher, template, approach_z, server_url)
+    for side, index, device, matcher, template in pending:
+        result = _collect_sample(side, index, device, matcher, template, approach_z, server_url, wrist_reference_xy)
         if result is None:
             break
         if path.read_bytes() != original:
@@ -386,7 +455,38 @@ def collect_samples(path, camera, sample_index, devices, server_url):
         original = path.read_bytes()
         saved += 1
         print(f"已保存 {side} 第 {index + 1} 组到 {path}，原图 {image}")
+        _report_collection_fit(side, measurements[side], matcher.roi)
     return {"measurements": str(path), "saved": saved, "remaining": len(pending) - saved}
+
+
+def relabel_sample(path, camera, sample_index):
+    from examples.collection_utils import _save_json
+
+    original = path.read_bytes()
+    measurements = json.loads(original.decode("utf-8-sig"))
+    validate_port_camera_roles(measurements["fixed"]["camera"], measurements["wrist"]["camera"])
+    section = measurements[camera]
+    samples = section["samples"]
+    if not 1 <= sample_index <= len(samples):
+        raise ValueError(f"{camera} 的样本位置应在 1 至 {len(samples)} 之间")
+    sample = samples[sample_index - 1]
+    image = sample.get("image")
+    if not isinstance(image, str) or not image:
+        raise ValueError(f"{camera} 第 {sample_index} 组缺少保存的样本原图路径")
+
+    matcher, template = _sample_matcher(section, path.parent, camera)
+    frame = _read_image(path.parent / image)
+    if frame.shape[:2][::-1] != matcher.frame_size_wh:
+        raise ValueError(f"样本原图 {image} 的分辨率与参考图不一致")
+    previous = _numbers(sample.get("pixel_xy"), 2, "pixel_xy").tolist()
+    pixel = _confirm_sample_pixel(frame, matcher, template, point=previous)
+    if pixel is None:
+        return {"saved": False, "image": image}
+    if path.read_bytes() != original:
+        raise ValueError(f"标点时 {path} 有其他改动，请重新运行以载入最新内容")
+    sample["pixel_xy"] = pixel
+    _save_json(path, measurements)
+    return {"saved": True, "image": image, "pixel_xy": pixel}
 
 
 def inspect_frames(config_path, fixed_image=None, wrist_image=None):
@@ -416,6 +516,8 @@ def main(argv=None):
     fit_parser = subparsers.add_parser("fit", help="读取现场测量 JSON，拟合部署配置")
     fit_parser.add_argument("--measurements", required=True, type=Path)
     fit_parser.add_argument("--output", required=True, type=Path)
+    fit_parser.add_argument("--fixed-roi-from-samples", action="store_true",
+                            help="搜索框外围有奇异点时，缩小到可覆盖全部样本和模板的区域")
     capture_parser = subparsers.add_parser("capture", help="只通过相机保存原始 PNG")
     capture_parser.add_argument("--device", required=True, help="与任务配置相同的 /dev/videoN")
     capture_parser.add_argument("--output", required=True, type=Path)
@@ -429,6 +531,10 @@ def main(argv=None):
     collect_parser.add_argument("--fixed-device", help="覆盖固定相机的设备路径")
     collect_parser.add_argument("--wrist-device", help="覆盖腕部相机的设备路径")
     collect_parser.add_argument("--server-url", default="http://127.0.0.1:5000")
+    relabel_parser = subparsers.add_parser("relabel", help="用保存的样本原图重新标记像素位置")
+    relabel_parser.add_argument("--measurements", required=True, type=Path)
+    relabel_parser.add_argument("--camera", choices=("fixed", "wrist"), required=True)
+    relabel_parser.add_argument("--sample", type=int, required=True, help="样本编号，从 1 开始")
     inspect_parser = subparsers.add_parser("inspect", help="从保存的图像检查定位或腕部修正")
     inspect_parser.add_argument("--config", required=True, type=Path)
     inspect_parser.add_argument("--fixed-image", type=Path)
@@ -436,7 +542,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "fit":
-            report = fit(args.measurements, args.output)
+            report = fit(args.measurements, args.output, crop_fixed_roi=args.fixed_roi_from_samples)
         elif args.command == "capture":
             report = capture(args.device, args.output, args.width, args.height, args.fps)
         elif args.command == "collect":
@@ -446,6 +552,8 @@ def main(argv=None):
                 args.measurements, args.camera, args.sample,
                 {"fixed": args.fixed_device, "wrist": args.wrist_device}, args.server_url,
             )
+        elif args.command == "relabel":
+            report = relabel_sample(args.measurements, args.camera, args.sample)
         else:
             if args.fixed_image is None and args.wrist_image is None:
                 inspect_parser.error("至少指定一张 --fixed-image 或 --wrist-image")

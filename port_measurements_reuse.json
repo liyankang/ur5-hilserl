@@ -1,0 +1,49 @@
+{
+  "approach_z_m": -0.0691231212211635,
+  "fixed": {
+    "camera": "wrist",
+    "image": "fixed_ref_v2.png",
+    "max_fit_error_m": 0.005,
+    "min_peak_gap": 0.08,
+    "min_score": 0.8,
+    "roi": null,
+    "samples": [
+      {
+        "base_xy_m": [
+          0.09222838020615001,
+          -0.5944608296347411
+        ],
+        "image": "port_measurements_corrected_samples/fixed_01_a32513d3.png",
+        "pixel_xy": [
+          577.0,
+          333.5
+        ]
+      }
+    ],
+    "template_roi": [
+      550,
+      307,
+      55,
+      54
+    ]
+  },
+  "wrist": {
+    "camera": "global_2",
+    "image": "wrist_ref_v2.png",
+    "max_fit_error_px": 2.0,
+    "min_peak_gap": 0.08,
+    "min_score": 0.8,
+    "reference_tcp_xy_m": [
+      0.09219886834824143,
+      -0.594467126775437
+    ],
+    "roi": null,
+    "samples": [],
+    "template_roi": [
+      651,
+      227,
+      58,
+      56
+    ]
+  }
+}

@@ -1,4 +1,8 @@
 import os
+from examples.cuda_environment import configure_cuda_environment
+
+configure_cuda_environment()
+
 import gymnasium as gym
 import jax
 import jax.numpy as jnp

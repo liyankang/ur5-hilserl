@@ -12,6 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from examples.cuda_environment import configure_cuda_environment
+
+configure_cuda_environment()
+
 import glob
 import inspect
 import time

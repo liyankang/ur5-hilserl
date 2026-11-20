@@ -57,7 +57,10 @@ def _camera_template(section, base_dir, template_name):
     camera = section["camera"]
     if not isinstance(camera, str) or not camera.strip():
         raise ValueError("camera 需要任务配置中的相机逻辑名")
-    image = _read_image(base_dir / section["image"])
+    image_path = section.get("image")
+    if not isinstance(image_path, str) or not image_path.strip():
+        raise ValueError(f"{camera}.image 需要填写实拍参考图的路径")
+    image = _read_image(base_dir / image_path)
     height, width = image.shape[:2]
     x, y, w, h = _rect(section["template_roi"], "template_roi", width, height)
     roi_value = section.get("roi")

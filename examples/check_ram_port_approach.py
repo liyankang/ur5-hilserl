@@ -16,6 +16,14 @@ def main():
     args = parser.parse_args()
     os.environ["RAM_PORT_VISION_CONFIG"] = str(Path(args.config).resolve())
 
+    # 配置完整后才加载任务和学习依赖，避免缺文件时先触发 GPU 初始化。
+    from examples.experiments.ram_insertion.port_vision import PortVision, PortVisionError
+
+    try:
+        PortVision.load(args.config)
+    except PortVisionError as error:
+        parser.error(str(error))
+
     # 分离参数解析，--help 无需安装学习框架或打开相机。
     from experiments.ram_insertion.config import EnvConfig
     from experiments.ram_insertion.wrapper import RAMEnv

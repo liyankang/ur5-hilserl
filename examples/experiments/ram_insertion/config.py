@@ -50,8 +50,8 @@ STATE_FIELD_SHAPES = {
         
 class EnvConfig(DefaultEnvConfig):
     # Policy actions are issued at POLICY_HZ; the interpolated robot loop runs at CONTROL_HZ.
-    POLICY_HZ = 20
-    CONTROL_HZ = 100
+    POLICY_HZ = 10
+    CONTROL_HZ = 50
     # Current UR5 RAM-insertion deployment assumes no physical gripper.
     SERVER_URL = "http://127.0.0.1:5000/"
     CAMERAS = {
@@ -79,8 +79,8 @@ class EnvConfig(DefaultEnvConfig):
 
     }
     # Pose convention in this config: xyz + rotvec (UR RTDE native orientation).
-    TARGET_POSE = np.array([0.1092, -0.6608, -0.2163, 2.9348, -1.0839, 0.0372])
-    GRASP_POSE = np.array([0.1092, -0.6608, -0.2163, 2.9348, -1.0839, 0.0372])
+    TARGET_POSE = np.array([0.0686, -0.6108, -0.2154, 2.9124, -1.1268, 0.0482])
+    GRASP_POSE = np.array([0.0686, -0.6108, -0.2154, 2.9124, -1.1268, 0.0482])
     # Sparse task reward: reward=1 when TCP pose (xyz + rotvec) reaches TARGET_POSE within tolerance.
     REWARD_THRESHOLD = np.array([0.005, 0.005, 0.005, 0.02, 0.02, 0.02], dtype=np.float64)
     RESET_POSE = TARGET_POSE + np.array([0, 0, 0.1, 0, 0, 0])
@@ -90,7 +90,7 @@ class EnvConfig(DefaultEnvConfig):
     RANDOM_RESET = True
     RANDOM_XY_RANGE = 0.03
     RANDOM_RZ_RANGE = 0.0001
-    ACTION_SCALE = (0.01, 0.01, 1)
+    ACTION_SCALE = (0.005, 0.005, 1)
     ACTION_ROTATION_REPR = "rotvec"
     POSE_ROTATION_REPR = "rotvec"
     DISPLAY_IMAGE = True
@@ -98,8 +98,8 @@ class EnvConfig(DefaultEnvConfig):
     GRIPPER_SLEEP = 0.0
     GRIPPER_ENABLED = False
     MAX_EPISODE_LENGTH = 100
-    # Keep classifier integration available in code, but disabled for RAM sparse target reward mode.
-    ENABLE_CLASSIFIER_REWARD = False
+    # Online RL uses the learned visual success detector. Collection bypasses it.
+    ENABLE_CLASSIFIER_REWARD = True
 
     RESET_INTERPOLATE_TIMEOUT =2.0
     # 空载（无法兰夹具）
@@ -149,6 +149,7 @@ class EnvConfig(DefaultEnvConfig):
 
 
 class TrainConfig(DefaultTrainingConfig):
+    classifier_checkpoint_path = os.path.abspath("classifier_ckpt/ram_insertion")
     image_keys = ["global_1", "wrist", "global_2"]
     classifier_keys = ["wrist", "global_2"]
     proprio_keys = ["tcp_pose", "tcp_vel", "tcp_force", "tcp_torque", "gripper_pose"]
@@ -188,17 +189,19 @@ class TrainConfig(DefaultTrainingConfig):
             policy_freq=EnvConfig.POLICY_HZ,
             control_freq=EnvConfig.CONTROL_HZ,
         )
-        if classifier and EnvConfig.ENABLE_CLASSIFIER_REWARD:
+        if classifier and not fake_env and EnvConfig.ENABLE_CLASSIFIER_REWARD:
+            # Do not terminate on a coordinate threshold before visual success.
+            env.unwrapped.use_pose_reward = False
             classifier = load_classifier_func(
                 key=jax.random.PRNGKey(0),
                 sample=env.observation_space.sample(),
                 image_keys=self.classifier_keys,
-                checkpoint_path=os.path.abspath("classifier_ckpt/"),
+                checkpoint_path=self.classifier_checkpoint_path,
             )
             
             def reward_func(obs):
                 sigmoid = lambda x: 1 / (1 + jnp.exp(-x))
-                return float(sigmoid(classifier(obs)))
+                return sigmoid(classifier(obs)).item()
 
             env = MultiCameraBinaryRewardClassifierWrapper(env, reward_func, reward_threshold=0.95)
         return env

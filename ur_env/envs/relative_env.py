@@ -2,7 +2,7 @@ import copy
 from scipy.spatial.transform import Rotation as R
 import gymnasium as gym
 import numpy as np
-from gym import Env
+from gymnasium import Env
 from ur_env.utils.transformations import (
     construct_adjoint_matrix,
     construct_homogeneous_matrix,
@@ -44,11 +44,12 @@ class RelativeFrame(gym.Wrapper):
         info['original_state_obs'] = copy.deepcopy(obs['state'])
 
         # this is to convert the spacemouse intervention action
-        if "intervene_action" in info:
-            info["intervene_action"] = self.transform_action_inv(info["intervene_action"])
+        for field in ("intervene_action", "applied_action"):
+            if field in info:
+                info[field] = self.transform_action_inv(info[field])
 
         # Update adjoint matrix
-        self.adjoint_matrix = construct_adjoint_matrix(obs["state"]["tcp_pose"])
+        self.adjoint_matrix = self._tcp_frame_matrix(obs["state"]["tcp_pose"])
 
         # Transform observation to spatial frame
         transformed_obs = self.transform_observation(obs)
@@ -59,7 +60,7 @@ class RelativeFrame(gym.Wrapper):
         info['original_state_obs'] = copy.deepcopy(obs['state'])
 
         # Update adjoint matrix
-        self.adjoint_matrix = construct_adjoint_matrix(obs["state"]["tcp_pose"])
+        self.adjoint_matrix = self._tcp_frame_matrix(obs["state"]["tcp_pose"])
         if self.include_relative_pose:
             # Update transformation matrix from the reset pose's relative frame to base frame
             self.T_r_o_inv = np.linalg.inv(
@@ -68,6 +69,19 @@ class RelativeFrame(gym.Wrapper):
 
         # Transform observation to spatial frame
         return self.transform_observation(obs), info
+
+    @staticmethod
+    def _tcp_frame_matrix(pose):
+        """Rotate TCP-local increments; do not change the point of application.
+
+        动作是同一个 TCP 点的位移和旋转增量，不是从基坐标原点搬移过来的
+        空间 twist。两部分分别乘 R 即可；加入 p×R 会把纯平移混成伪旋转。
+        """
+        rotation = R.from_quat(np.asarray(pose)[3:]).as_matrix()
+        transform = np.zeros((6, 6), dtype=np.float64)
+        transform[:3, :3] = rotation
+        transform[3:, 3:] = rotation
+        return transform
 
     def transform_observation(self, obs):
         """
@@ -90,8 +104,7 @@ class RelativeFrame(gym.Wrapper):
 
     def transform_action(self, action: np.ndarray):
         """
-        Transform action from body(end-effector) frame into into spatial(base) frame
-        using the adjoint matrix. 
+        Rotate translation and rotation increments from TCP-local to base axes.
         """
         action = np.array(action)  # in case action is a jax read-only array
         action[:6] = self.adjoint_matrix @ action[:6]
@@ -99,8 +112,7 @@ class RelativeFrame(gym.Wrapper):
 
     def transform_action_inv(self, action: np.ndarray):
         """
-        Transform action from spatial(base) frame into body(end-effector) frame
-        using the adjoint matrix.
+        Rotate increments from base axes back to the same TCP-local axes.
         """
         action = np.array(action)
         action[:6] = np.linalg.inv(self.adjoint_matrix) @ action[:6]

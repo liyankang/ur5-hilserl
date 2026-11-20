@@ -1,118 +1,87 @@
-"""验证分类器效果"""
+"""用独立标注数据检查分类器；默认只检查报告中留出的完整回合。"""
+
+import argparse
+import json
+from pathlib import Path
+import pickle
 import sys
-import os
-sys.path.insert(0, 'examples')
-sys.path.insert(0, '.')
 
-import glob
-import pickle as pkl
-import numpy as np
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "examples"))
+
 import jax
-from jax import numpy as jnp
-from flax.training import checkpoints
-
+import numpy as np
 from experiments.mappings import CONFIG_MAPPING
-from serl_launcher.networks.reward_classifier import create_classifier
-from flax.training import checkpoints as ckpts
+from serl_launcher.networks.reward_classifier import load_classifier_func
+from examples.classifier_data import (
+    sample_group, validation_metrics, latest_classifier_checkpoint, checkpoint_fingerprint,
+)
+
+
+def _images_and_optional_state(obs, image_keys, use_proprio):
+    """兼容旧版 images 嵌套字段和当前扁平相机字段，不手写时间维形状。"""
+    result = {}
+    images = obs.get("images", obs)
+    aliases = {"global_1": "wrist_1", "wrist": "wrist_2", "global_2": "wrist_3"}
+    for key in image_keys:
+        if key in images:
+            result[key] = images[key]
+        elif aliases.get(key) in images:
+            result[key] = images[aliases[key]]
+        else:
+            raise ValueError(f"Missing classifier camera: {key}")
+    if use_proprio:
+        result["state"] = obs["state"]
+    return result
 
 
 def main():
-    exp_name = "ram_insertion"
-    config = CONFIG_MAPPING[exp_name]()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--exp_name", choices=CONFIG_MAPPING, default="ram_insertion")
+    parser.add_argument("--threshold", type=float, default=None)
+    parser.add_argument("--data_dir", default=None)
+    parser.add_argument("--all_data", action="store_true", help="仅诊断：检查全部数据，不代表独立验证准确率")
+    args = parser.parse_args()
+    config = CONFIG_MAPPING[args.exp_name]()
+    use_proprio = getattr(config, "classifier_use_proprio", True)
+    threshold = args.threshold if args.threshold is not None else getattr(config, "classifier_success_threshold", 0.95)
+    data_dir = Path(args.data_dir or getattr(config, "classifier_data_dir", "classifier_data"))
+    # 缺少报告时拒绝把训练样本上的拟合准确率冒充离线泛化结果。
+    held_out = None
+    if not args.all_data:
+        report_file = Path(config.classifier_checkpoint_path) / "validation.json"
+        report = json.loads(report_file.read_text(encoding="utf-8"))
+        step, checkpoint = latest_classifier_checkpoint(config.classifier_checkpoint_path)
+        if report.get("checkpoint_step") != step or report.get("checkpoint_sha256") != checkpoint_fingerprint(checkpoint):
+            raise ValueError("Validation groups do not describe the currently saved classifier")
+        if report.get("exp_name") != args.exp_name or report.get("image_keys") != list(config.classifier_keys):
+            raise ValueError("Validation report camera/task settings do not match this experiment")
+        if report.get("use_proprio") is not bool(use_proprio):
+            raise ValueError("Validation report network inputs do not match the current classifier")
+        held_out = set(report["validation_groups"])
     env = config.get_environment(fake_env=True, save_video=False, classifier=False)
-    
-    # 加载分类器
-    checkpoint_path = os.path.join(os.getcwd(), "classifier_ckpt/")
-    
-    # 创建 sample 用于初始化 classifier
-    rng = jax.random.PRNGKey(0)
-    # 使用 config 中实际的 classifier_keys
-    img_keys = config.classifier_keys  # e.g. ["wrist"] or ["wrist_3"]
-    sample_obs = {"state": jnp.zeros((1, 19))}
-    for k in img_keys:
-        sample_obs[k] = jnp.zeros((1, 128, 128, 3), dtype=jnp.uint8)
-    
-    classifier = create_classifier(rng, sample_obs, config.classifier_keys)
-    classifier = ckpts.restore_checkpoint(checkpoint_path, target=classifier)
-    print("分类器加载完成!")
-    
-    # 定义预测函数
-    @jax.jit
-    def predict(obs):
-        logits = classifier.apply_fn({"params": classifier.params}, obs, train=False)
-        return jax.nn.sigmoid(logits)
-    
-    # 加载测试数据
-    success_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", "*success*.pkl"))
-    failure_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", "*failure*.pkl"))
-
-    # 旧数据相机名 → 新相机名映射
-    # wrist_1→global_1 (/dev/video0), wrist_2→wrist (/dev/video2), wrist_3→global_2 (/dev/video4)
-    KEY_MAP = {"wrist_1": "global_1", "wrist_2": "wrist", "wrist_3": "global_2"}
-
-    def build_flat_obs(obs):
-        flat = {"state": jnp.array(obs["state"])[None, ...]}
-        images = obs.get("images", {})
-        for k in img_keys:
-            if k in images:
-                flat[k] = jnp.array(images[k])[None, ...]
-            elif k in obs:
-                flat[k] = jnp.array(obs[k])[None, ...]
-            else:
-                # 尝试从旧 key 映射
-                for old_k, new_k in KEY_MAP.items():
-                    if new_k == k and old_k in images:
-                        flat[k] = jnp.array(images[old_k])[None, ...]
-                        break
-        return flat
-    
-    # 测试成功样本
-    success_correct = 0
-    success_total = 0
-    for path in success_paths:
-        with open(path, "rb") as f:
-            data = pkl.load(f)
-        for trans in data:
-            if "images" not in trans['observations'].keys():
-                continue
-            # 展平 observation
-            obs = trans["observations"]
-            flat_obs = build_flat_obs(obs)
-            prob = predict(flat_obs)
-            pred_label = (prob >= 0.5).item()
-            if pred_label == 1:  # 预测为成功
-                success_correct += 1
-            success_total += 1
-    
-    # 测试失败样本 (只取一部分，太多会很慢)
-    failure_correct = 0
-    failure_total = 0
-    max_failure = 500  # 只测试 500 个失败样本
-    for path in failure_paths:
-        with open(path, "rb") as f:
-            data = pkl.load(f)
-        for trans in data:
-            if failure_total >= max_failure:
-                break
-            if "images" not in trans['observations'].keys():
-                continue
-            obs = trans["observations"]
-            flat_obs = build_flat_obs(obs)
-            prob = predict(flat_obs)
-            pred_label = (prob >= 0.5).item()
-            if pred_label == 0:  # 预测为失败
-                failure_correct += 1
-            failure_total += 1
-        if failure_total >= max_failure:
-            break
-    
-    print("\n" + "="*50)
-    print("分类器验证结果:")
-    print("="*50)
-    print(f"成功样本准确率: {success_correct}/{success_total} = {success_correct/success_total*100:.1f}%")
-    print(f"失败样本准确率: {failure_correct}/{failure_total} = {failure_correct/failure_total*100:.1f}%")
-    print(f"总体准确率: {(success_correct+failure_correct)}/{success_total+failure_total} = {(success_correct+failure_correct)/(success_total+failure_total)*100:.1f}%")
-    print("="*50)
+    sample = env.observation_space.sample()
+    classifier = load_classifier_func(
+        jax.random.PRNGKey(0), sample, config.classifier_keys,
+        config.classifier_checkpoint_path, use_proprio=use_proprio,
+    )
+    labels, probabilities = [], []
+    for kind, label in (("success", 1), ("failure", 0)):
+        for path in sorted(data_dir.glob(f"{args.exp_name}_*{kind}*.pkl")):
+            with path.open("rb") as stream:
+                records = pickle.load(stream)
+            for record in records:
+                if held_out is not None and sample_group(record, path) not in held_out:
+                    continue
+                obs = record.get("next_observations", record["observations"])
+                obs = _images_and_optional_state(obs, config.classifier_keys, use_proprio)
+                probability = float(np.asarray(jax.nn.sigmoid(classifier(obs))).item())
+                labels.append(label)
+                probabilities.append(probability)
+    metrics = validation_metrics(labels, probabilities, threshold)
+    print(json.dumps(dict(metrics, threshold=threshold, independent_validation=not args.all_data), indent=2))
+    # fake_env 没有创建相机；无需调用会访问硬件清理字段的基类 close。
 
 
 if __name__ == "__main__":

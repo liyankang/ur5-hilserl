@@ -2,6 +2,8 @@ import glob
 import os
 import sys
 import pickle as pkl
+import json
+from pathlib import Path
 import gymnasium as gym
 import jax
 from jax import numpy as jnp
@@ -21,6 +23,10 @@ from serl_launcher.vision.data_augmentations import batched_random_crop
 from serl_launcher.networks.reward_classifier import create_classifier
 
 from experiments.mappings import CONFIG_MAPPING
+from examples.classifier_data import (
+    sample_group, split_grouped_examples, validation_metrics,
+    latest_classifier_checkpoint, checkpoint_fingerprint,
+)
 
 
 FLAGS = flags.FLAGS
@@ -37,12 +43,22 @@ flags.DEFINE_boolean(
 )
 
 
-def _normalize_classifier_obs(obs, classifier_keys):
+def _normalize_classifier_obs(obs, classifier_keys, use_proprio=True):
+    # Current SERLObsWrapper puts camera keys alongside state; accept old files too.
+    if "images" not in obs and all(key in obs for key in classifier_keys):
+        keys = (["state"] if use_proprio else []) + list(classifier_keys)
+        if any(key not in obs for key in keys):
+            return None
+        return {key: obs[key] for key in keys}
     if "images" not in obs:
         return None
 
     key_map = {"wrist_1": "global_1", "wrist_2": "wrist", "wrist_3": "global_2"}
-    new_obs = {"state": obs["state"]}
+    new_obs = {}
+    if use_proprio:
+        if "state" not in obs:
+            return None
+        new_obs["state"] = obs["state"]
     for ck in classifier_keys:
         if ck in obs["images"]:
             new_obs[ck] = obs["images"][ck]
@@ -56,9 +72,9 @@ def _normalize_classifier_obs(obs, classifier_keys):
     return new_obs
 
 
-def _transition_to_classifier_example(trans, label, classifier_keys):
+def _transition_to_classifier_example(trans, label, classifier_keys, use_proprio=True):
     obs_key = "next_observations" if "next_observations" in trans else "observations"
-    obs = _normalize_classifier_obs(trans[obs_key], classifier_keys)
+    obs = _normalize_classifier_obs(trans[obs_key], classifier_keys, use_proprio)
     if obs is None:
         return None
 
@@ -67,19 +83,6 @@ def _transition_to_classifier_example(trans, label, classifier_keys):
     example["next_observations"] = obs
     example["labels"] = label
     return example
-
-
-def _split_examples(examples, val_ratio, rng):
-    if len(examples) < 2:
-        return examples, []
-    indices = np.arange(len(examples))
-    rng.shuffle(indices)
-    val_count = max(1, int(round(len(examples) * val_ratio)))
-    val_count = min(val_count, len(examples) - 1)
-    val_indices = set(indices[:val_count])
-    train = [example for i, example in enumerate(examples) if i not in val_indices]
-    val = [example for i, example in enumerate(examples) if i in val_indices]
-    return train, val
 
 
 def _make_buffer(examples, observation_space, action_space, capacity):
@@ -115,20 +118,25 @@ def _score_summary(name, probs):
 
 
 def main(_):
+    if FLAGS.num_epochs <= 0 or FLAGS.eval_period <= 0 or FLAGS.batch_size < 2 or FLAGS.batch_size % 2:
+        raise ValueError("num_epochs/eval_period must be positive and batch_size must be positive and even")
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
     config = CONFIG_MAPPING[FLAGS.exp_name]()
+    use_proprio = getattr(config, "classifier_use_proprio", True)
+    success_threshold = getattr(config, "classifier_success_threshold", 0.95)
+    data_dir = Path(getattr(config, "classifier_data_dir", "classifier_data"))
     env = config.get_environment(fake_env=True, save_video=False, classifier=False)
 
     devices = jax.local_devices()
     sharding = jax.sharding.PositionalSharding(devices)
 
     # Only keep classifier-relevant keys in observation space (flat structure)
-    kept_keys = ["state"] + list(config.classifier_keys)
+    kept_keys = (["state"] if use_proprio else []) + list(config.classifier_keys)
     filtered_obs_space = gym.spaces.Dict(
         {k: v for k, v in env.observation_space.spaces.items() if k in kept_keys}
     )
 
-    success_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", "*success*.pkl"))
+    success_paths = sorted(data_dir.glob(f"{FLAGS.exp_name}_*success*.pkl"))
     pos_examples = []
     num_skipped_success = 0
     for path in success_paths:
@@ -136,17 +144,18 @@ def main(_):
         for trans in success_data:
             if FLAGS.terminal_only and not trans.get("dones", False):
                 continue
-            example = _transition_to_classifier_example(trans, 1, config.classifier_keys)
+            example = _transition_to_classifier_example(trans, 1, config.classifier_keys, use_proprio)
             if example is None:
                 num_skipped_success += 1
                 continue
             example["actions"] = env.action_space.sample()
+            example["validation_group"] = sample_group(trans, path)
             pos_examples.append(example)
             
     if len(pos_examples) == 0:
         raise ValueError("No positive classifier samples found. Check success data or disable --terminal_only.")
     
-    failure_paths = glob.glob(os.path.join(os.getcwd(), "classifier_data", "*failure*.pkl"))
+    failure_paths = sorted(data_dir.glob(f"{FLAGS.exp_name}_*failure*.pkl"))
     neg_examples = []
     num_skipped_failure = 0
     for path in failure_paths:
@@ -156,19 +165,24 @@ def main(_):
         for trans in failure_data:
             if FLAGS.terminal_only and not trans.get("dones", False):
                 continue
-            example = _transition_to_classifier_example(trans, 0, config.classifier_keys)
+            example = _transition_to_classifier_example(trans, 0, config.classifier_keys, use_proprio)
             if example is None:
                 num_skipped_failure += 1
                 continue
             example["actions"] = env.action_space.sample()
+            example["validation_group"] = sample_group(trans, path)
             neg_examples.append(example)
             
     if len(neg_examples) == 0:
         raise ValueError("No negative classifier samples found. Check failure data or disable --terminal_only.")
 
     split_rng = np.random.default_rng(FLAGS.seed)
-    pos_train, pos_val = _split_examples(pos_examples, FLAGS.val_ratio, split_rng)
-    neg_train, neg_val = _split_examples(neg_examples, FLAGS.val_ratio, split_rng)
+    # 必须联合划分两类样本：同一回合的正帧和负帧不能出现在不同分区。
+    train, validation = split_grouped_examples(pos_examples + neg_examples, FLAGS.val_ratio, split_rng)
+    pos_train = [e for e in train if e["labels"] == 1]
+    neg_train = [e for e in train if e["labels"] == 0]
+    pos_val = [e for e in validation if e["labels"] == 1]
+    neg_val = [e for e in validation if e["labels"] == 0]
     if len(pos_val) == 0 or len(neg_val) == 0:
         raise ValueError(
             "Validation split is empty for at least one class. "
@@ -213,6 +227,7 @@ def main(_):
     classifier = create_classifier(key, 
                                    sample["observations"], 
                                    config.classifier_keys,
+                                   use_proprio=use_proprio,
                                    )
 
     def data_augmentation_fn(rng, observations):
@@ -250,7 +265,7 @@ def main(_):
         )
         loss = optax.sigmoid_binary_cross_entropy(logits, batch["labels"]).mean()
         probs = nn.sigmoid(logits)
-        accuracy = jnp.mean((probs >= 0.5) == batch["labels"])
+        accuracy = jnp.mean((probs >= success_threshold) == batch["labels"])
         return loss, accuracy, probs
 
     def evaluate_classifier(epoch):
@@ -274,6 +289,12 @@ def main(_):
         )
         print(_score_summary("  success probs", pos_probs_np))
         print(_score_summary("  failure probs", neg_probs_np))
+        metrics = validation_metrics(
+            [1] * len(pos_probs_np) + [0] * len(neg_probs_np),
+            np.concatenate([pos_probs_np, neg_probs_np]), success_threshold,
+        )
+        print(f"Deployment threshold={success_threshold}: {metrics}")
+        return metrics
 
     for epoch in tqdm(range(FLAGS.num_epochs)):
         # Sample equal number of positive and negative examples
@@ -298,11 +319,29 @@ def main(_):
             evaluate_classifier(epoch + 1)
 
     checkpoints.save_checkpoint(
-        os.path.join(os.getcwd(), "classifier_ckpt/"),
+        config.classifier_checkpoint_path,
         classifier,
         step=FLAGS.num_epochs,
         overwrite=True,
     )
+    # 先确实保存权重，再将这份权重的验证结果与指纹一起写出。
+    metrics = evaluate_classifier(FLAGS.num_epochs)
+    step, checkpoint = latest_classifier_checkpoint(config.classifier_checkpoint_path)
+    if step != FLAGS.num_epochs:
+        raise ValueError("A newer checkpoint already exists; use a new directory or increase num_epochs")
+    report = dict(
+        metrics, exp_name=FLAGS.exp_name, use_proprio=use_proprio,
+        image_keys=list(config.classifier_keys), threshold=success_threshold,
+        checkpoint_step=step, checkpoint_sha256=checkpoint_fingerprint(checkpoint),
+        split_method="grouped_by_episode_or_capture",
+        train_groups=sorted({e["validation_group"] for e in train}),
+        validation_groups=sorted({e["validation_group"] for e in validation}),
+    )
+    report_path = Path(config.classifier_checkpoint_path) / "validation.json"
+    temporary = report_path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, report_path)
+    print(f"Validation report: {report_path}; passed={report['passed']}")
     
 
 if __name__ == "__main__":

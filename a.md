@@ -125,7 +125,7 @@ bash run_actor.sh
 **环境变量**（已在脚本中配置）：
 ```bash
 export PATH=/home/serl/miniforge3/envs/hilserl/lib/python3.10/site-packages/nvidia/cuda_nvcc/bin:$PATH
-export LD_LIBRARY_PATH=.../nvidia/cuda_cudnn/lib:.../nvidia/cuda_runtime/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=.../nvidia/cuda_cudnn/lib:.../nvidia/cuda_runtime/lib:$LD_LIBRARY_PATHxianu
 ```
 
 ---
@@ -155,8 +155,8 @@ export LD_LIBRARY_PATH=.../nvidia/cuda_cudnn/lib:.../nvidia/cuda_runtime/lib:$LD
 ## 5. 常见问题
 
 ### 端口占用 (ZMQError: Address already in use)
-```bash
-lsof -ti:5588 | xargs kill -9 2>/dev/null
+```
+bash lsof -ti:5588 | xargs kill -9 2>/dev/null
 ```
 
 ### XLA ptxas 版本错误

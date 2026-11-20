@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "exp_name": "usb_insertion",
+  "robot": {
+    "model": "UR5",
+    "joint_dof": 6,
+    "server_url": "http://127.0.0.1:5000/",
+    "controller": "rtde_servoL",
+    "gripper_enabled": false
+  },
+  "calibration": {
+    "status": "calibrated",
+    "tcp_verified": true,
+    "workspace_verified": true,
+    "reset_path_verified": true,
+    "camera_fov_verified": true,
+    "wrench_verified": false
+  },
+  "action": {
+    "action_dim": 6,
+    "mode": "cartesian_delta",
+    "rotation_representation": "mrp",
+    "max_translation_step_m": 0.005,
+    "max_rotation_step_deg": 1.0,
+    "gripper_processor_enabled": false,
+    "gripper_penalty_enabled": false
+  },
+  "workspace_bounds": {
+    "frame": "robot_base",
+    "position_low_m": [0.0236, -0.6558, -0.2254],
+    "position_high_m": [0.1136, -0.5658, -0.0654],
+    "reference_rotvec_rad": [2.9348, -1.0839, 0.0372],
+    "relative_rotation_limit_deg": [5.0, 5.0, 2.0]
+  },
+  "task": {
+    "nominal_inserted_tcp_pose_m_rotvec": [0.0686, -0.6108, -0.2154, 2.9348, -1.0839, 0.0372],
+    "insertion_axis_base": [0.0, 0.0, -1.0]
+  },
+  "reset": {
+    "terminate_on_success": true,
+    "nominal_tcp_pose_m_rotvec": [0.0686, -0.6108, -0.1154, 2.9348, -1.0839, 0.0372],
+    "randomize": true,
+    "translation_range_m": [0.025, 0.025, 0.02],
+    "rotation_range_deg": [0.0, 0.0, 0.0],
+    "rotation_frame": "robot_base",
+    "clearance_along_axis_m": 0.06,
+    "motion_duration_s": 3.0,
+    "max_episode_steps": 300,
+    "seed": 42
+  },
+  "observation": {
+    "image_keys": ["global_1", "wrist", "global_2"],
+    "proprio_keys": ["tcp_pose", "tcp_vel", "tcp_force", "tcp_torque"],
+    "cameras": {
+      "global_1": {"video_device": "/dev/video2", "dim": [1280, 720], "fps": 10, "crop_yxyx": [79, 550, 195, 836]},
+      "wrist": {"video_device": "/dev/video4", "dim": [1280, 720], "fps": 10, "crop_yxyx": [195, 720, 358, 977]},
+      "global_2": {"video_device": "/dev/video0", "dim": [1280, 720], "fps": 10, "crop_yxyx": [410, 656, 354, 649]}
+    }
+  },
+  "reward_classifier": {
+    "enabled": true,
+    "checkpoint_path": "classifier_ckpt/usb_insertion_visual_v1",
+    "image_keys": ["wrist", "global_2"],
+    "use_proprio": false,
+    "success_threshold": 0.95,
+    "minimum_validation_accuracy": 0.95,
+    "terminate_on_success": true
+  },
+  "controller_safety": {
+    "enabled": true,
+    "wrench_monitor_enabled": false,
+    "force_norm_limit_n": null,
+    "torque_norm_limit_nm": null,
+    "wrench_bias": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "latch_on_violation": true
+  },
+  "training": {
+    "agent": "sac",
+    "network_action_dim": 6,
+    "policy_hz": 10,
+    "control_hz": 50,
+    "batch_size": 64,
+    "demo_sampling_ratio": 0.5,
+    "training_starts": 200,
+    "max_steps": 1000000,
+    "checkpoint_period": 5000,
+    "checkpoint_path": "checkpoints/usb_fixed_tool_v1"
+  }
+}

@@ -83,6 +83,12 @@ class DefaultEnvConfig:
     GRASP_POSE: np.ndarray = np.zeros((6,))
     REWARD_THRESHOLD: np.ndarray = np.zeros((6,))
     ACTION_SCALE = np.zeros((3,))
+    # 每个策略步允许请求的平移/旋转范数；None 保持旧任务行为。
+    MAX_TRANSLATION_STEP_M = None
+    MAX_ROTATION_STEP_RAD = None
+    # 新任务用“相对基准朝向”的旋转边界，避免逐分量裁剪绝对 rotvec。
+    ROTATION_REFERENCE_ROTVEC = None
+    ROTATION_LIMITS_RAD = None
     ACTION_ROTATION_REPR: str = "euler"
     POSE_ROTATION_REPR: str = "euler"
     RESET_POSE = np.zeros((6,))
@@ -132,6 +138,9 @@ class urEnv(gym.Env):
         self.display_image = config.DISPLAY_IMAGE
         self.gripper_sleep = config.GRIPPER_SLEEP
         self.gripper_enabled = config.GRIPPER_ENABLED
+        # 无夹爪时只产生六维末端动作，内部也不拼接虚假的夹爪控制量。
+        self.terminate = False
+        self._safety_stop = False
         self.camera_config = getattr(config, "CAMERAS", None) or config.REALSENSE_CAMERAS
 
         if self.pose_rotation_repr not in {"euler", "rotvec"}:
@@ -171,9 +180,10 @@ class urEnv(gym.Env):
             dtype=np.float64,
         )
         # Action/Observation Space
+        action_dim = 7 if self.gripper_enabled else 6
         self.action_space = gym.spaces.Box(
-            np.ones((7,), dtype=np.float32) * -1,
-            np.ones((7,), dtype=np.float32),
+            np.ones((action_dim,), dtype=np.float32) * -1,
+            np.ones((action_dim,), dtype=np.float32),
         )
 
         self.observation_space = gym.spaces.Dict(
@@ -237,7 +247,18 @@ class urEnv(gym.Env):
         pose[:3] = np.clip(
             pose[:3], self.xyz_bounding_box.low, self.xyz_bounding_box.high
         )
-        if self.pose_rotation_repr == "euler":
+        reference = getattr(self.config, "ROTATION_REFERENCE_ROTVEC", None)
+        relative_limits = getattr(self.config, "ROTATION_LIMITS_RAD", None)
+        if reference is not None and relative_limits is not None:
+            # 用基坐标轴表达相对插入姿态的小角度误差，与 reset 的左乘扰动一致。
+            reference_rotation = Rotation.from_rotvec(np.asarray(reference, dtype=np.float64))
+            limits = np.asarray(relative_limits, dtype=np.float64)
+            if limits.shape != (3,) or not np.all(np.isfinite(limits)) or np.any(limits < 0):
+                raise ValueError("ROTATION_LIMITS_RAD must contain three finite non-negative values")
+            relative = (Rotation.from_quat(pose[3:]) * reference_rotation.inv()).as_rotvec()
+            relative = np.clip(relative, -limits, limits)
+            pose[3:] = (Rotation.from_rotvec(relative) * reference_rotation).as_quat()
+        elif self.pose_rotation_repr == "euler":
             euler = Rotation.from_quat(pose[3:]).as_euler("xyz")
             # Clip first euler angle separately due to discontinuity from pi to -pi
             sign = np.sign(euler[0])
@@ -262,11 +283,34 @@ class urEnv(gym.Env):
     def step(self, action: np.ndarray) -> tuple:
         """standard gym step function."""
         start_time = time.time()
+        if getattr(self, "_safety_stop", False):
+            raise RuntimeError("Robot safety stop is latched; acknowledge it on the robot server before continuing")
+        action = np.asarray(action, dtype=np.float32)
+        if action.shape != self.action_space.shape or not np.all(np.isfinite(action)):
+            raise ValueError(f"Expected finite action shape {self.action_space.shape}, got {action.shape}")
         action = np.clip(action, self.action_space.low, self.action_space.high)
-        xyz_delta = action[:3]
+        # 插值分配给每个子步的物理预算之和为一个策略步的预算。
+        weight = float(getattr(self, "_policy_step_weight", 1.0))
+        if not np.isfinite(weight) or weight <= 0 or weight > 1:
+            raise ValueError("_policy_step_weight must be in (0, 1]")
+        config = getattr(self, "config", None)
+        if hasattr(self, "xyz_bounding_box") and (
+            np.any(self.currpos[:3] < self.xyz_bounding_box.low - 1e-6)
+            or np.any(self.currpos[:3] > self.xyz_bounding_box.high + 1e-6)
+        ):
+            # 不能用“裁剪到边界”把一个已越界的当前位置突然拉回很远的位置。
+            raise RuntimeError("Current TCP position is outside the workspace; reposition manually before policy control")
+        xyz_delta = action[:3].astype(np.float64) * self.action_scale[0]
+        max_translation = getattr(config, "MAX_TRANSLATION_STEP_M", None)
+        if max_translation is not None:
+            if not np.isfinite(max_translation) or max_translation <= 0:
+                raise ValueError("MAX_TRANSLATION_STEP_M must be finite and positive")
+            norm = np.linalg.norm(xyz_delta)
+            if norm > max_translation * weight:
+                xyz_delta *= max_translation * weight / norm
 
         self.nextpos = self.currpos.copy()
-        self.nextpos[:3] = self.nextpos[:3] + xyz_delta * self.action_scale[0]
+        self.nextpos[:3] = self.nextpos[:3] + xyz_delta
 
         rot_delta = action[3:6] * self.action_scale[1]
         if self.action_rotation_repr == "euler":
@@ -278,23 +322,54 @@ class urEnv(gym.Env):
                 f"Unsupported ACTION_ROTATION_REPR={self.action_rotation_repr!r}. "
                 "Expected 'euler' or 'rotvec'."
             )
+        max_rotation = getattr(config, "MAX_ROTATION_STEP_RAD", None)
+        if max_rotation is not None:
+            if not np.isfinite(max_rotation) or max_rotation <= 0:
+                raise ValueError("MAX_ROTATION_STEP_RAD must be finite and positive")
+            # 在物理旋转角上限幅，而不是把 MRP/欧拉角的各分量当作角度范数。
+            rotation_vector = delta_rotation.as_rotvec()
+            norm = np.linalg.norm(rotation_vector)
+            if norm > max_rotation * weight:
+                rotation_vector *= max_rotation * weight / norm
+            delta_rotation = Rotation.from_rotvec(rotation_vector)
         self.nextpos[3:] = (delta_rotation * Rotation.from_quat(self.currpos[3:])).as_quat()
-        gripper_action = action[6] * self.action_scale[2]
-
-        self._send_gripper_command(gripper_action)
-        self._send_pos_command(self.clip_safety_box(self.nextpos), source="policy")
+        requested_orientation = self.nextpos[3:].copy()
+        self.nextpos = self.clip_safety_box(self.nextpos)
+        applied_action = action.copy()
+        if self.action_scale[0] > 0:
+            applied_action[:3] = (self.nextpos[:3] - self.currpos[:3]) / self.action_scale[0]
+        if self.action_scale[1] > 0 and (max_rotation is not None or not np.allclose(requested_orientation, self.nextpos[3:])):
+            applied_rotation = Rotation.from_quat(self.nextpos[3:]) * Rotation.from_quat(self.currpos[3:]).inv()
+            if max_rotation is not None:
+                # 对最终目标再核验一次；旋转工作区投影也不能突破单步物理角度预算。
+                applied_vector = applied_rotation.as_rotvec()
+                applied_norm = np.linalg.norm(applied_vector)
+                if applied_norm > max_rotation * weight + 1e-10:
+                    # 当前姿态不在允许旋转域内时拒绝继续，不用一次大角度动作拉回。
+                    raise RuntimeError("Workspace rotation correction exceeds this step's rotation budget")
+            applied_action[3:6] = (applied_rotation.as_rotvec() if self.action_rotation_repr == "rotvec" else applied_rotation.as_euler("xyz")) / self.action_scale[1]
+        if getattr(self, "gripper_enabled", self.action_space.shape == (7,)):
+            self._send_gripper_command(action[6] * self.action_scale[2])
+        self._send_pos_command(self.nextpos, source="policy")
 
         self.curr_path_length += 1
         dt = time.time() - start_time
         time.sleep(max(0, (1.0 / self.hz) - dt))
 
         self._update_currpos()
-        ob = self._get_obs()
+        defer_images = getattr(self, "_defer_step_images", False)
+        ob = self._get_obs(refresh_images=not defer_images)
         reward = self.compute_reward(ob)
-        done = self.curr_path_length >= self.max_episode_length or reward or self.terminate
-        return ob, int(reward), done, False, {"succeed": reward}
+        terminated = bool(reward or self.terminate)
+        truncated = bool(self.curr_path_length >= self.max_episode_length and not terminated)
+        if defer_images and (terminated or truncated):
+            ob = self._get_obs()
+        return ob, int(reward), terminated, truncated, {"succeed": bool(reward), "applied_action": applied_action}
 
     def compute_reward(self, obs) -> bool:
+        # An outer learned reward wrapper owns success during classifier-based RL.
+        if not getattr(self, "use_pose_reward", True):
+            return False
         current_pose = obs["state"]["tcp_pose"]
         current_rot = Rotation.from_quat(current_pose[3:]).as_matrix()
         if self.pose_rotation_repr == "euler":
@@ -485,13 +560,20 @@ class urEnv(gym.Env):
 
     def _recover(self):
         """Internal function to recover the robot from error state."""
-        requests.post(self.url + "clearerr")
+        # 先读取安全锁存；自动 reset 不允许悄悄清除超力等保护状态。
+        self._update_currpos()
+        if getattr(self, "_safety_stop", False):
+            raise RuntimeError("Safety stop requires explicit server acknowledgement")
+        response = requests.post(self.url + "clearerr", timeout=5.0)
+        response.raise_for_status()
 
     def _send_pos_command(self, pos: np.ndarray, source: str = "policy"):
         """Internal function to send position command to the robot."""
         arr = np.array(pos).astype(np.float32)
         data = {"arr": arr.tolist(), "source": source}
-        requests.post(self.url + "pose", json=data)
+        response = requests.post(self.url + "pose", json=data, timeout=5.0)
+        # 服务端拒绝越界/超力命令时必须中断，不能把未执行的命令写入经验池。
+        response.raise_for_status()
 
     def _send_gripper_command(self, pos: float, mode="binary"):
         """Internal function to send gripper command to the robot."""
@@ -539,6 +621,11 @@ class urEnv(gym.Env):
         return jacobian.reshape(6, jacobian.size // 6)
 
     def _parse_state_response(self, ps: dict):
+        if ps.get("safety_stop"):
+            self._safety_stop = True
+            self.terminate = True
+            reason = ps.get("safety_reason") or "server did not report a reason; check the robot server log"
+            raise RuntimeError(f"Robot safety stop: {reason}")
         pose = ps.get("pose", np.zeros((7,), dtype=np.float32))
         self.currpos = self._normalize_pose(pose)
         self.currvel = np.array(ps.get("vel", np.zeros((6,))), dtype=np.float32).reshape(-1)
@@ -566,7 +653,9 @@ class urEnv(gym.Env):
         """
         Internal function to get the latest state of the robot and its gripper.
         """
-        ps = requests.post(self.url + "getstate").json()
+        response = requests.post(self.url + "getstate", timeout=5.0)
+        response.raise_for_status()
+        ps = response.json()
         self._parse_state_response(ps)
 
     def update_currpos(self):
@@ -576,8 +665,11 @@ class urEnv(gym.Env):
         ps = requests.post(self.url + "getstate").json()
         self._parse_state_response(ps)
 
-    def _get_obs(self) -> dict:
-        images = self.get_im()
+    def _get_obs(self, refresh_images=True) -> dict:
+        # 低帧率相机只在策略步末刷新；中间子步仍读取实时机器人状态。
+        if refresh_images or not hasattr(self, "_cached_obs_images"):
+            self._cached_obs_images = self.get_im()
+        images = self._cached_obs_images
         state_observation = {
             "tcp_pose": self.currpos,
             "tcp_vel": self.currvel,

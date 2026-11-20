@@ -56,6 +56,18 @@ class ActionInterpolationWrapper(gym.Wrapper):
         
         # Initialize action buffer
         self.current_action = None
+        # Keyboard replacement happens inside interpolation. Scale it by the
+        # same weights as policy actions so one key press is not applied N times.
+        self._keyboard_wrappers = []
+        intervention_types = (KeyBoardIntervention,)
+        spacemouse_type = globals().get("SpacemouseIntervention")
+        if spacemouse_type is not None:
+            intervention_types += (spacemouse_type,)
+        wrapped = env
+        while wrapped is not None:
+            if isinstance(wrapped, intervention_types):
+                self._keyboard_wrappers.append(wrapped)
+            wrapped = getattr(wrapped, "env", None)
         self.action_space = env.action_space
         self._configure_timing()
 
@@ -88,6 +100,12 @@ class ActionInterpolationWrapper(gym.Wrapper):
         done = False
         truncated = False
         merged_info = {}
+        executed_action = np.zeros_like(self.current_action)
+        applied_action = np.zeros_like(self.current_action)
+        intervened = False
+        base_env = self.unwrapped
+        previous_weight = getattr(base_env, "_policy_step_weight", 1.0)
+        previous_defer = getattr(base_env, "_defer_step_images", False)
 
         for substep in range(self.interpolation_steps):
             # Linear interpolation: velocity increases linearly from slow to fast.
@@ -97,14 +115,37 @@ class ActionInterpolationWrapper(gym.Wrapper):
             # Sum = (2+4+...+2N) / (N*(N+1)) = N*(N+1) / (N*(N+1)) = 1.0 ✓
             weight = 2 * (substep + 1) / (self.interpolation_steps * (self.interpolation_steps + 1))
             sub_action = self.current_action * weight
-            obs, step_rew, step_done, step_truncated, step_info = self.env.step(sub_action)
+            for keyboard in self._keyboard_wrappers:
+                keyboard._interpolation_weight = weight
+            base_env._policy_step_weight = weight
+            base_env._defer_step_images = substep < self.interpolation_steps - 1
+            try:
+                obs, step_rew, step_done, step_truncated, step_info = self.env.step(sub_action)
+            finally:
+                base_env._policy_step_weight = previous_weight
+                base_env._defer_step_images = previous_defer
+                for keyboard in self._keyboard_wrappers:
+                    keyboard._interpolation_weight = 1.0
+            # applied_action 已经由内部坐标/MRP包装器变回策略空间，包含限幅结果。
+            applied_subaction = step_info.get("applied_action", step_info.get("intervene_action", sub_action))
+            applied_action += applied_subaction
+            executed_action += applied_subaction
+            intervened = intervened or bool(step_info.get("is_intervention", False)) or "intervene_action" in step_info
+            manual_success = merged_info.get("manual_success", False)
             merged_info.update(step_info)
+            if manual_success:
+                merged_info["manual_success"] = True
             rew += float(step_rew)
             done = done or step_done
             truncated = truncated or step_truncated
-            if done or truncated:
+            # 成功/超时或人工请求成功后，不再发送本策略步剩余的移动命令。
+            if done or truncated or merged_info.get("manual_success", False):
                 break
 
+        if intervened:
+            merged_info["intervene_action"] = executed_action
+        merged_info["is_intervention"] = intervened
+        merged_info["applied_action"] = applied_action
         return obs, rew, done, truncated, merged_info
 
 class MultiCameraBinaryRewardClassifierWrapper(gym.Wrapper):
@@ -130,7 +171,14 @@ class MultiCameraBinaryRewardClassifierWrapper(gym.Wrapper):
         prob = self.compute_reward(obs)
         info['classifier_prob'] = float(prob)
         rew = 1.0 if prob >= self.reward_threshold else 0.0
-        done = done or rew
+        done = bool(done or rew)
+        if rew:
+            truncated = False
+            # 回合结束本身不会取消后台 servoL 的旧目标；固定工具成功后立即保持。
+            base_env = getattr(self, "unwrapped", None)
+            hold = getattr(base_env, "hold_position", None)
+            if callable(hold):
+                hold()
         info['succeed'] = bool(rew)
         if self.target_hz is not None:
             time.sleep(max(0, 1/self.target_hz - (time.time() - start_time)))
@@ -258,8 +306,9 @@ class MrpToRotvecActionWrapper(gym.ActionWrapper):
     def step(self, action):
         new_action = self.action(action)
         obs, rew, done, truncated, info = self.env.step(new_action)
-        if "intervene_action" in info:
-            info["intervene_action"] = self._rotvec_action_to_mrp_action(info["intervene_action"])
+        for field in ("intervene_action", "applied_action"):
+            if field in info:
+                info[field] = self._rotvec_action_to_mrp_action(info[field])
         return obs, rew, done, truncated, info
 
 
@@ -326,10 +375,15 @@ class GripperCloseEnv(gym.ActionWrapper):
     def __init__(self, env):
         super().__init__(env)
         ub = self.env.action_space
-        assert ub.shape == (7,)
+        if ub.shape not in {(6,), (7,)}:
+            raise ValueError(f"Expected a 6D fixed-tool or 7D legacy action space, got {ub.shape}")
+        self._legacy_gripper_dimension = ub.shape == (7,)
         self.action_space = Box(ub.low[:6], ub.high[:6])
 
     def action(self, action: np.ndarray) -> np.ndarray:
+        if not self._legacy_gripper_dimension:
+            # 原生无夹爪环境保持六维，连内部也不生成第七维夹爪控制量。
+            return np.asarray(action, dtype=np.float32).copy()
         new_action = np.zeros((7,), dtype=np.float32)
         new_action[:6] = action.copy()
         return new_action
@@ -337,8 +391,9 @@ class GripperCloseEnv(gym.ActionWrapper):
     def step(self, action):
         new_action = self.action(action)
         obs, rew, done, truncated, info = self.env.step(new_action)
-        if "intervene_action" in info:
-            info["intervene_action"] = info["intervene_action"][:6]
+        for field in ("intervene_action", "applied_action"):
+            if field in info:
+                info[field] = info[field][:6]
         return obs, rew, done, truncated, info
     
     def reset(self, **kwargs):
@@ -396,10 +451,12 @@ class SpacemouseIntervention(gym.ActionWrapper):
     def step(self, action):
 
         new_action, replaced = self.action(action)
-
+        if replaced:
+            new_action = new_action * getattr(self, "_interpolation_weight", 1.0)
         obs, rew, done, truncated, info = self.env.step(new_action)
         if replaced:
-            info["intervene_action"] = new_action
+            info["intervene_action"] = info.get("applied_action", new_action)
+        info["is_intervention"] = bool(replaced)
         info["left"] = self.left
         info["right"] = self.right
         return obs, rew, done, truncated, info
@@ -626,9 +683,10 @@ class KeyBoardIntervention(gym.ActionWrapper):
             base_env._update_currpos()
             current_xyz = base_env.currpos[:3]
             current_quat = base_env.currpos[3:7]  # xyzw
+            
             target_xyz = base_env._TARGET_POSE[:3]
             target_rotvec = base_env._TARGET_POSE[3:6]
-
+            print("go-to-target", current_xyz, target_xyz)
             # Position error in base frame.
             pos_err_base = target_xyz - current_xyz
             current_rot = Rot.from_quat(current_quat).as_matrix()
@@ -704,9 +762,22 @@ class KeyBoardIntervention(gym.ActionWrapper):
     def step(self, action):
         new_action, replaced = self.action(action)
 
-        obs, rew, done, truncated, info = self.env.step(new_action)
         if replaced:
-            info["intervene_action"] = new_action
+            new_action = new_action * getattr(self, "_interpolation_weight", 1.0)
+        base_env = self.unwrapped
+        previous_defer = getattr(base_env, "_defer_step_images", False)
+        manual_success = self._manual_success
+        if manual_success:
+            # F 键标注时本步先保持当前位置，并获取新图像供人工标签使用。
+            new_action = np.zeros_like(new_action)
+            base_env._defer_step_images = False
+        try:
+            obs, rew, done, truncated, info = self.env.step(new_action)
+        finally:
+            base_env._defer_step_images = previous_defer
+        if replaced:
+            info["intervene_action"] = info.get("applied_action", new_action)
+        info["is_intervention"] = bool(replaced)
         info["left"] = self.left
         info["right"] = self.right
         if self._manual_success:

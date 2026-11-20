@@ -1,0 +1,2 @@
+serl_robot_ur/robot_servers/launch_ur_server_no_gripper_forcemode.sh text eol=lf
+serl_robot_ur/robot_servers/launch_ur_server_no_gripper_servo.sh text eol=lf

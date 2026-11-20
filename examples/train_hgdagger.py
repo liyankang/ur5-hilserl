@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 
+import sys
+from pathlib import Path
+
+# 直接运行脚本时也能找到项目根目录下的公共采集工具。
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import time
 import jax
 import jax.numpy as jnp
@@ -29,6 +37,10 @@ from serl_launcher.utils.launcher import (
 from serl_launcher.data.data_store import MemoryEfficientReplayBufferDataStore
 
 from experiments.mappings import CONFIG_MAPPING
+from examples.collection_utils import (
+    apply_manual_success, ensure_training_schema, make_transition,
+    validate_action_space, validate_parameter_shapes, validate_transition_shapes,
+)
 
 FLAGS = flags.FLAGS
 
@@ -80,6 +92,8 @@ def actor(agent: BCAgent, data_store, env, sampling_rng):
     This is the actor loop, which runs when "--actor" is set to True.
     """
     if FLAGS.eval_checkpoint_step:
+        if not FLAGS.checkpoint_path or not os.path.exists(os.path.join(FLAGS.checkpoint_path, f"checkpoint_{FLAGS.eval_checkpoint_step}")):
+            raise FileNotFoundError(f"Requested BC checkpoint_{FLAGS.eval_checkpoint_step} does not exist.")
         global should_reset
         listener = keyboard.Listener(on_press=on_press)
         listener.start()
@@ -91,6 +105,7 @@ def actor(agent: BCAgent, data_store, env, sampling_rng):
             agent.state,
             step=FLAGS.eval_checkpoint_step,
         )
+        validate_parameter_shapes(agent.state.params, ckpt.params, "BC evaluation checkpoint")
         agent = agent.replace(state=ckpt)
 
         for episode in range(FLAGS.eval_n_trajs):
@@ -108,6 +123,7 @@ def actor(agent: BCAgent, data_store, env, sampling_rng):
 
                 next_obs, reward, done, truncated, info = env.step(actions)
                 obs = next_obs
+                done = bool(done or truncated)
 
                 if done or should_reset:
                     should_reset = False
@@ -144,6 +160,7 @@ def actor(agent: BCAgent, data_store, env, sampling_rng):
     # Function to update the agent with new params
     def update_params(params):
         nonlocal agent
+        validate_parameter_shapes(agent.state.params, params, "BC learner parameter update")
         agent = agent.replace(state=agent.state.replace(params=params))
 
     client.recv_network_callback(update_params)
@@ -177,37 +194,33 @@ def actor(agent: BCAgent, data_store, env, sampling_rng):
         with timer.context("step_env"):
 
             next_obs, reward, done, truncated, info = env.step(actions)
+            reward, done, truncated, info = apply_manual_success(reward, done, truncated, info, env=env)
             if "left" in info:
                 info.pop('left')
             if "right" in info:
                 info.pop('right')
 
             # override the action with the intervention action
-            if "intervene_action" in info:
-                actions = info.pop("intervene_action")
+            if info.get("is_intervention", "intervene_action" in info):
                 intervention_steps += 1
                 if not already_intervened:
                     intervention_count += 1
                 already_intervened = True
             else:
                 already_intervened = False
+            info["is_intervention"] = already_intervened
+            actions = info.get("applied_action", info.get("intervene_action", actions))
 
             reward = np.asarray(reward, dtype=np.float32)
             running_return += reward
-            transition = dict(
-                observations=obs,
-                actions=actions,
-                next_observations=next_obs,
-                rewards=reward,
-                masks=1.0 - done,
-                dones=done,
-            )
+            transition = make_transition(obs, actions, next_obs, reward, done, truncated, info)
             if already_intervened:
                 data_store.insert(transition)
                 demo_transitions.append(copy.deepcopy(transition))
 
             obs = next_obs
             if done or truncated:
+                info.setdefault("episode", {})
                 info['episode']['intervention_count'] = intervention_count
                 info['episode']['intervention_steps'] = intervention_steps
                 stats = {"environment": info}  # send stats to the learner to log
@@ -281,6 +294,7 @@ def learner(rng, agent: BCAgent, demo_buffer, wandb_logger=None):
             ckpt = checkpoints.restore_checkpoint(
                 os.path.abspath(FLAGS.checkpoint_path), agent.state, step=FLAGS.pretrain_steps
             )
+            validate_parameter_shapes(agent.state.params, ckpt.params, "BC training checkpoint")
             agent = agent.replace(state=ckpt)
             update_step = FLAGS.pretrain_steps
         else:
@@ -338,6 +352,9 @@ def learner(rng, agent: BCAgent, demo_buffer, wandb_logger=None):
 def main(_):
     global config
     config = CONFIG_MAPPING[FLAGS.exp_name]()
+    # CLI 显式值优先；缺省时使用任务 JSON 中的模型保存目录。
+    if FLAGS.checkpoint_path is None and getattr(config, "checkpoint_path", None):
+        FLAGS.checkpoint_path = config.checkpoint_path
 
     assert config.batch_size % num_devices == 0
     # seed
@@ -349,12 +366,19 @@ def main(_):
                                  save_video=False, 
                                  classifier=FLAGS.actor)
     env = RecordEpisodeStatistics(env)
+    sample_action = validate_action_space(config, env)
+    latest_checkpoint = (
+        checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path))
+        if FLAGS.checkpoint_path and os.path.exists(FLAGS.checkpoint_path) else None
+    )
+    ensure_training_schema(config, env, FLAGS.checkpoint_path, FLAGS.exp_name,
+                           has_checkpoint=latest_checkpoint is not None, algorithm="bc")
 
     rng, sampling_rng = jax.random.split(rng)
     agent: BCAgent = make_bc_agent(
         seed=FLAGS.seed,
         sample_obs=env.observation_space.sample(),
-        sample_action=env.action_space.sample(),
+        sample_action=sample_action,
         image_keys=config.image_keys,
         encoder_type=config.encoder_type,
     )
@@ -377,22 +401,27 @@ def main(_):
             env.action_space,
             capacity=50000,
             image_keys=config.image_keys,
+            include_intervention=getattr(config, "action_dim", None) is not None,
         )
 
         assert FLAGS.demo_path is not None or FLAGS.demo_buffer_path is not None
 
-        for file in glob.glob(os.path.join(FLAGS.demo_buffer_path, "*.pkl")):
+        for file in glob.glob(os.path.join(FLAGS.demo_buffer_path, "*.pkl")) if FLAGS.demo_buffer_path else []:
             with open(file, "rb") as f:
                 transitions = pkl.load(f)
                 for transition in transitions:
+                    validate_transition_shapes(transition, env.observation_space, env.action_space, file)
+                    transition.setdefault("is_intervention", True)
                     demo_buffer.insert(transition)
         print_green(
             f"Loaded previous demo buffer data. Demo buffer size: {len(demo_buffer)}"
         )
-        for path in FLAGS.demo_path:
+        for path in FLAGS.demo_path or []:
             with open(path, "rb") as f:
                 transitions = pkl.load(f)
                 for transition in transitions:
+                    validate_transition_shapes(transition, env.observation_space, env.action_space, path)
+                    transition.setdefault("is_intervention", True)
                     demo_buffer.insert(transition)
         print(f"demo buffer size: {len(demo_buffer)}")
         

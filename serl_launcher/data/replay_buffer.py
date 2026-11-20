@@ -43,6 +43,7 @@ class ReplayBuffer(Dataset):
         include_next_actions: Optional[bool] = False,
         include_label: Optional[bool] = False,
         include_grasp_penalty: Optional[bool] = False,
+        include_intervention: bool = False,
     ):
         if next_observation_space is None:
             next_observation_space = observation_space
@@ -68,6 +69,10 @@ class ReplayBuffer(Dataset):
         if include_grasp_penalty:
             dataset_dict['grasp_penalty'] = np.empty((capacity,), dtype=np.float32)
 
+        # 无夹爪 HIL 任务保留接管标签；旧任务默认不改变经验结构。
+        if include_intervention:
+            dataset_dict['is_intervention'] = np.empty((capacity,), dtype=bool)
+
         super().__init__(dataset_dict)
 
         self._size = 0
@@ -78,6 +83,8 @@ class ReplayBuffer(Dataset):
         return self._size
 
     def insert(self, data_dict: DatasetDict):
+        if "is_intervention" in self.dataset_dict and "is_intervention" not in data_dict:
+            data_dict = dict(data_dict, is_intervention=False)
         _insert_recursively(self.dataset_dict, data_dict, self._insert_index)
 
         self._insert_index = (self._insert_index + 1) % self._capacity

@@ -57,18 +57,18 @@ def _read_image(path):
     return image
 
 
-def _camera_template(section, base_dir, template_name):
+def _camera_template(section, base_dir, template_name, *, side):
     camera = section["camera"]
     if not isinstance(camera, str) or not camera.strip():
-        raise ValueError("camera 需要任务配置中的相机逻辑名")
+        raise ValueError(f"{side}.camera 需要任务配置中的相机逻辑名")
     image_path = section.get("image")
     if not isinstance(image_path, str) or not image_path.strip():
-        raise ValueError(f"{camera}.image 需要填写实拍参考图的路径")
+        raise ValueError(f"{side}.image 需要填写实拍参考图的路径（相机逻辑名 {camera}）")
     image = _read_image(base_dir / image_path)
     height, width = image.shape[:2]
-    x, y, w, h = _rect(section["template_roi"], "template_roi", width, height)
+    x, y, w, h = _rect(section["template_roi"], f"{side}.template_roi", width, height)
     roi_value = section.get("roi")
-    roi = [0, 0, width, height] if roi_value is None else _rect(roi_value, "roi", width, height)
+    roi = [0, 0, width, height] if roi_value is None else _rect(roi_value, f"{side}.roi", width, height)
     rx, ry, rw, rh = roi
     if x < rx or y < ry or x + w > rx + rw or y + h > ry + rh:
         raise ValueError("template_roi 需完整位于搜索 roi 内")
@@ -179,10 +179,10 @@ def fit(measurements_path, output_path):
     if abs(approach_z) > 2.0:
         raise ValueError("approach_z_m 超过 2 m，请检查是否误填了毫米")
     fixed, fixed_png, _ = _camera_template(
-        measurements["fixed"], measurements_path.parent, f"{output_path.stem}_fixed.png"
+        measurements["fixed"], measurements_path.parent, f"{output_path.stem}_fixed.png", side="fixed"
     )
     wrist, wrist_png, reference = _camera_template(
-        measurements["wrist"], measurements_path.parent, f"{output_path.stem}_wrist.png"
+        measurements["wrist"], measurements_path.parent, f"{output_path.stem}_wrist.png", side="wrist"
     )
     homography, fixed_error = _fit_fixed(measurements["fixed"], fixed["roi"])
     jacobian, wrist_error = _fit_wrist(measurements["wrist"], wrist["roi"], reference)
@@ -339,7 +339,7 @@ def collect_samples(path, camera, sample_index, devices, server_url):
         if side == "wrist":
             approach_z = _numbers([measurements.get("approach_z_m")], 1, "approach_z_m")[0]
             _xy_m(section.get("reference_tcp_xy_m"), "wrist.reference_tcp_xy_m")
-        controls, template, _ = _camera_template(section, path.parent, "")
+        controls, template, _ = _camera_template(section, path.parent, "", side=side)
         matcher = _TemplateMatcher(
             camera=controls["camera"], template_gray=cv2.cvtColor(template, cv2.COLOR_BGR2GRAY),
             frame_size_wh=tuple(controls["frame_size_wh"]), roi=tuple(controls["roi"]),

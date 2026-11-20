@@ -1,5 +1,7 @@
 import copy
 import logging
+import os
+import sys
 import time
 from scipy.spatial.transform import Rotation as R
 import numpy as np
@@ -18,8 +20,23 @@ def _fmt_pose(label, value):
 
 class RAMEnv(urEnv):
     def __init__(self, **kwargs):
+        self.port_approach = None
+        vision_path = None if kwargs.get("fake_env", False) else os.getenv("RAM_PORT_VISION_CONFIG")
+        if vision_path:
+            if not sys.stdin.isatty():
+                raise ValueError("RAM port vision needs an interactive terminal for the fixture-ready key U")
+            from .port_approach import PortApproach
+            from .port_vision import PortVision
+
+            vision = PortVision.load(vision_path)
         super().__init__(**kwargs)
         self.should_regrasp = False
+        if vision_path:
+            try:
+                self.port_approach = PortApproach(self, vision)
+            except Exception:
+                super().close()
+                raise
         self._unsubscribe_regrasp = TERMINAL_KEYBOARD_HUB.register(self._on_key)
 
         LOGGER.info("RAM demo hotkey enabled: press r to regrasp")
@@ -38,19 +55,37 @@ class RAMEnv(urEnv):
             raise
 
     def _on_key(self, key_char: str):
+        if self.port_approach is not None:
+            self.port_approach.on_key(key_char)
         if key_char.lower() == "r":
             self.should_regrasp = True
+
+    def _send_pos_command(self, pos, source="policy"):
+        if self.port_approach is not None:
+            self.port_approach.send_pose(pos, source)
+            return
+        super()._send_pos_command(pos, source=source)
+
+    def _update_currpos(self):
+        if self.port_approach is not None:
+            state, _ = self.port_approach.read_state()
+            self._parse_state_response(state)
+            return
+        super()._update_currpos()
 
     def go_to_reset(self, joint_reset=False):
         """
         Move to the rest position defined in base class.
         Add a small z offset before going to rest to avoid collision with object.
         """        
+        # use compliance mode for coupled reset
         self._update_currpos()
         LOGGER.info("[RAMEnv] go_to_reset start %s", _fmt_pose("currpos", self.currpos))
 
         self._send_pos_command(self.currpos, source="reset")
         time.sleep(0.3)
+        self._post_debug("update_param", payload=self.config.PRECISION_PARAM)
+
         reset_timeout = float(getattr(self.config, "RESET_INTERPOLATE_TIMEOUT", 2.5))
 
         # pull up
@@ -90,14 +125,21 @@ class RAMEnv(urEnv):
             self.interpolate_move(reset_pose, timeout=reset_timeout)
         time.sleep(0.5)
 
+        # Change to compliance mode
+        self._post_debug("update_param", payload=self.config.COMPLIANCE_PARAM)
+
+
     def regrasp(self):
         if not self.config.GRIPPER_ENABLED:
             LOGGER.warning("Regrasp skipped: gripper is disabled for this UR5 setup.")
             return
 
+        # use compliance mode for coupled reset
         self._update_currpos()
         self._send_pos_command(self.currpos, source="reset")
         time.sleep(0.3)
+        requests.post(self.url + "update_param", json=self.config.PRECISION_PARAM)
+
         # pull up
         self._update_currpos()
         reset_pose = copy.deepcopy(self.currpos)
@@ -134,6 +176,17 @@ class RAMEnv(urEnv):
         if self.save_video:
             self.save_video_recording()
 
+        if self.port_approach is not None:
+            if joint_reset:
+                raise ValueError("RAM port vision uses Cartesian retreat and approach")
+            info = self.port_approach.align()
+            self._post_debug("update_param", payload=self.config.COMPLIANCE_PARAM).raise_for_status()
+            self.should_regrasp = False
+            self.curr_path_length = 0
+            self.terminate = False
+            self._update_currpos()
+            return self._get_obs(), info
+
         # if True:
         if self.should_regrasp:
             self.regrasp()
@@ -147,6 +200,7 @@ class RAMEnv(urEnv):
 
         self._update_currpos()
         obs = self._get_obs()
+        self._post_debug("update_param", payload=self.config.COMPLIANCE_PARAM)
         self.terminate = False
         return obs, {}
 
@@ -154,4 +208,8 @@ class RAMEnv(urEnv):
         if hasattr(self, "_unsubscribe_regrasp") and self._unsubscribe_regrasp is not None:
             self._unsubscribe_regrasp()
             self._unsubscribe_regrasp = None
-        return super().close()
+        try:
+            if self.port_approach is not None:
+                self.port_approach.hold()
+        finally:
+            super().close()

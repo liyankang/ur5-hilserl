@@ -1,22 +1,15 @@
-UR5 control uses streamed Cartesian pose servoing. Start the server with
-`serl_robot_ur/robot_servers/launch_ur_server_no_gripper_servo.sh`.
+# UR5 HIL-SERL
 
-固定 U 盘的 USB 插接使用六维末端增量动作，无夹爪控制。实际运行配置位于
-`examples/experiments/usb_insertion/train_config.json`，支持用环境变量
-`UR5_USB_TRAIN_CONFIG` 指定另一份配置。它是本仓库原生 HIL-SERL/Gym/RTDE
-的配置格式，不是直接交给 LeRobot CLI 的 `GymManipulatorConfig`。
+`ram_insertion` 是已接入 UR5 的任务。Gym 环境通过 Flask 服务向 UR 控制器发送 RTDE 命令。`usb_pickup_insertion` 是依赖 Franka 的历史任务。
 
-- 奖励数据采集、纯视觉训练与验收：[CLASSIFIER_ADAPTATION.md](CLASSIFIER_ADAPTATION.md)
-- 实机标定、控制限制与启动门槛：[TRAINING_SAFETY_CHECKLIST.md](TRAINING_SAFETY_CHECKLIST.md)
-- 数据字段与采集入口：[examples/DATA_COLLECTION.md](examples/DATA_COLLECTION.md)
-
-默认 JSON 记录当前装置的现场确认结果，插入点 XYZ 沿用已验证的 `ram_insertion`。更换装置后需要重新确认标定。只读检查：
+从仓库根目录启动服务，选择与现场配置匹配的入口，并将 `<UR5_IP>` 替换为控制柜地址。
 
 ```bash
-python examples/check_usb_training_setup.py
+# 无夹爪力控
+bash serl_robot_ur/robot_servers/launch_ur_server_no_gripper_forcemode.sh <UR5_IP>
+
+# 无夹爪位置伺服
+bash serl_robot_ur/robot_servers/launch_ur_server_no_gripper_servo.sh <UR5_IP>
 ```
 
-本仓库用 `RelativeFrame` / `urEnv.step` 完成末端增量到目标位姿的转换，并由 UR
-控制器原生处理笛卡尔运动所需的逆运动学；没有额外接入 LeRobot 的关节处理器。
-夹爪转换与夹爪惩罚在 USB 任务中都不启用。TCP 包围盒不是整臂碰撞检测，须先
-按检查清单验证实际运动范围。默认仅使用位置伺服和位置监督，未实现力控/阻抗。
+可用 `python test_force_mode.py --help` 查看独立力控测试的参数。服务端设置与接口见 [机器人服务说明](serl_robot_ur/README.md)，采集与样本字段见 [数据采集说明](examples/DATA_COLLECTION.md)。

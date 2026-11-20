@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import os
+import logging
 from tqdm import tqdm
 import numpy as np
 import copy
@@ -40,12 +41,16 @@ from examples.collection_utils import (
 
 
 def main(_):
+    if FLAGS.exp_name == "ram_insertion" and FLAGS.auto and os.getenv("RAM_PORT_VISION_CONFIG"):
+        raise ValueError("Use manual demonstrations when RAM port vision is active")
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
     config = CONFIG_MAPPING[FLAGS.exp_name]()
-    # USB 示范以视觉分类器判定成功；采集前先训练并验证成功检测器。
-    env = config.get_environment(fake_env=False, save_video=False,
-                                 classifier=FLAGS.exp_name == "usb_insertion")
+    env = config.get_environment(fake_env=False, save_video=False, classifier=False)
+<<<<<<< HEAD
+    port_vision_active = getattr(env.unwrapped, "port_approach", None) is not None
+=======
     validate_action_space(config, env)
+>>>>>>> bfceff79cbfcd986446dd23474f8b68bbd2040f8
     restart_requested = False
     success_requested = False
     failure_requested = False
@@ -68,12 +73,12 @@ def main(_):
     success_needed = FLAGS.successes_needed
     resume_path = None
 
+    transitions = []
+    success_count = 0
+    success_needed = FLAGS.successes_needed
     try:
         obs, info = env.reset()
         print("Reset done")
-        transitions = []
-        success_count = 0
-        success_needed = FLAGS.successes_needed
 
         # ── Resume: load existing data ──
         if FLAGS.resume:
@@ -181,11 +186,28 @@ def main(_):
                         transitions.append(copy.deepcopy(transition))
                     success_count += 1
                     pbar.update(1)
+                    if port_vision_active and success_count - base_success >= success_needed:
+                        break
                 trajectory = []
                 returns = 0
                 obs, info = env.reset()
     finally:
         unsubscribe_restart()
+<<<<<<< HEAD
+        if port_vision_active:
+            try:
+                env.close()
+            except Exception:
+                logging.exception("Failed to close the RAM port vision environment")
+        # ── Save results even if interrupted ──
+        if transitions:
+            if not os.path.exists("./demo_data"):
+                os.makedirs("./demo_data")
+            uuid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            file_name = f"./demo_data/{FLAGS.exp_name}_{success_needed}_demos_{uuid}.pkl"
+            with open(file_name, "wb") as f:
+                pkl.dump(transitions, f)
+=======
         try:
             # ── Save results even if interrupted ──
             if transitions:
@@ -194,6 +216,7 @@ def main(_):
                 uuid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                 file_name = resume_path or f"./demo_data/{FLAGS.exp_name}_{success_needed}_demos_{uuid}.pkl"
                 save_pickle(file_name, transitions)
+>>>>>>> bfceff79cbfcd986446dd23474f8b68bbd2040f8
                 print(f"\nsaved {len(transitions)} transitions ({success_count} successes) to {file_name}")
             else:
                 print("\nNo transitions collected, nothing saved.")

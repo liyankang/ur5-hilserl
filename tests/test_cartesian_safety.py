@@ -115,12 +115,14 @@ def controller():
     # 跳过会创建真实控制线程的构造函数，显式给真实方法准备全部状态。
     result = Controller.__new__(Controller)
     result.rtde_r, result.rtde_c = FakeReceive(), FakeControl()
+    result.controller_mode = "servo"
     result.control_hz = 50
     result.default_speed = result.target_speed = 0.05
     result.default_accel = result.target_accel = 0.05
     result._safety_guard = None
     result._safety_stop_sent = False
     result._servo_paused = False
+    result._force_mode_active = False
     result.start_paused_until_pose = False
     result.disable_motion = False
     result._motion_lock, result._lock = threading.RLock(), threading.Lock()
@@ -269,6 +271,42 @@ class CartesianSafetyTests(unittest.TestCase):
         self.assertTrue(robot._servo_paused)
         self.assertIn("servoStop", robot.rtde_c.stop_calls)
         self.assertFalse(robot._servo_cycle(0.02))
+
+    def test_force_command_uses_selected_axes_and_stops_on_expiry(self):
+        robot = controller()
+        robot.controller_mode = "forcemode"
+        robot._direct_force_command = None
+        robot.last_policy_target_time = 0.0
+        robot.force_mode_idle_timeout = 0.2
+        force_calls = []
+        stop_calls = []
+
+        def send_force(*args):
+            force_calls.append(args)
+            return True
+
+        def stop_force():
+            stop_calls.append(True)
+            return True
+
+        robot.rtde_c.forceMode = send_force
+        robot.rtde_c.forceModeStop = stop_force
+        robot.configure_safety(safety_config())
+        with self.assertRaisesRegex(SafetyViolation, "paused"):
+            robot.set_force_mode({"wrench": [0, 0, 3, 0, 0, 0]})
+
+        robot.set_target_pose(robot.target_pose)
+        selection = [0, 0, 1, 0, 0, 0]
+        robot.set_force_mode({"wrench": [0, 0, 3, 0, 0, 0], "selection_vector": selection})
+        self.assertTrue(robot._servo_cycle(0.01))
+        self.assertEqual(force_calls[0][1], selection)
+        self.assertEqual(force_calls[0][2], [0, 0, 3, 0, 0, 0])
+
+        robot._direct_force_command["expires_at"] = 0.0
+        self.assertFalse(robot._servo_cycle(0.01))
+        self.assertFalse(robot._force_mode_active)
+        self.assertEqual(len(force_calls), 1)
+        self.assertEqual(len(stop_calls), 2)  # 安装守卫时一次，力命令到期后一次。
 
     def test_stop_failure_does_not_skip_other_available_stop_interfaces(self):
         robot = controller()

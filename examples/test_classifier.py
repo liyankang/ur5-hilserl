@@ -38,7 +38,7 @@ def _images_and_optional_state(obs, image_keys, use_proprio):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exp_name", choices=CONFIG_MAPPING, default="usb_insertion")
+    parser.add_argument("--exp_name", choices=CONFIG_MAPPING, default="ram_insertion")
     parser.add_argument("--threshold", type=float, default=None)
     parser.add_argument("--data_dir", default=None)
     parser.add_argument("--all_data", action="store_true", help="仅诊断：检查全部数据，不代表独立验证准确率")

@@ -1,5 +1,6 @@
 """Automatic demonstrations collected through the complete policy wrapper chain."""
 import copy
+import time
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 from examples.collection_utils import apply_manual_success, make_transition
@@ -17,6 +18,14 @@ def auto_move_to_target(env, target_pose, speed_mm=2.0, interrupt_check=None,
     speed = min(speed_mm / 1000.0 / scale, 1.0)
     obs = copy.deepcopy(initial_obs)
     transitions = []
+    if interrupt_check is not None and interrupt_check():
+        return transitions, True
+    # RAM 力控任务在自动轨迹开始前切到精确参数，轨迹仍通过完整环境包装链执行。
+    precision = getattr(getattr(base_env, "config", None), "PRECISION_PARAM", None)
+    post_debug = getattr(base_env, "_post_debug", None)
+    if precision and callable(post_debug):
+        post_debug("update_param", payload=precision)
+        time.sleep(0.3)
     while True:
         if interrupt_check is not None and interrupt_check():
             return transitions, True

@@ -632,13 +632,11 @@ def main(_):
 
         # actor loop
         print_green("starting actor loop")
-        actor(
-            agent,
-            data_store,
-            intvn_data_store,
-            env,
-            sampling_rng,
-        )
+        try:
+            actor(agent, data_store, intvn_data_store, env, sampling_rng)
+        finally:
+            if getattr(env.unwrapped, "port_approach", None) is not None:
+                env.close()
 
     else:
         raise NotImplementedError("Must be either a learner or an actor")

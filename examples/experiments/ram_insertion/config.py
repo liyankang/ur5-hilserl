@@ -159,7 +159,8 @@ class TrainConfig(DefaultTrainingConfig):
     encoder_type = "resnet-pretrained"
     setup_mode = "single-arm-fixed-gripper"
 
-    def get_environment(self, fake_env=False, save_video=False, classifier=False):
+    def get_environment(self, fake_env=False, save_video=False, classifier=False, *,
+                        keyboard_intervention=True, keyboard_go_to_target=True):
         env = RAMEnv(
             hz=EnvConfig.CONTROL_HZ,
             fake_env=fake_env,
@@ -167,8 +168,8 @@ class TrainConfig(DefaultTrainingConfig):
             config=EnvConfig(),
         )
         env = GripperCloseEnv(env)
-        if not fake_env:
-            env = KeyboardIntervention(env)
+        if not fake_env and keyboard_intervention:
+            env = KeyboardIntervention(env, allow_go_to_target=keyboard_go_to_target)
         env = RelativeFrame(env)
         env = MrpToRotvecActionWrapper(env, rotation_action_scale=EnvConfig.ACTION_SCALE[1])
         env = Quat2MrpWrapper(env)

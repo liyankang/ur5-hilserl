@@ -208,6 +208,56 @@ class FixedToolControlTests(unittest.TestCase):
         self.assertEqual(len(env.commands), 1)
         self.assertEqual(env.holds, 1)
 
+    def test_ram_reset_only_resumes_acknowledged_hold_at_fresh_tcp(self):
+        robot = robot_env()
+        keyboard = types.SimpleNamespace(register=lambda callback: lambda: None)
+        cls = definition(
+            "examples/experiments/ram_insertion/wrapper.py", "RAMEnv",
+            dict(urEnv=type(robot), R=Rotation, np=np, copy=copy,
+                 TERMINAL_KEYBOARD_HUB=keyboard, LOGGER=types.SimpleNamespace(info=lambda *args: None),
+                 _fmt_pose=lambda *args: "", time=types.SimpleNamespace(sleep=lambda delay: None)),
+        )
+        env = cls(config=robot.config, fake_env=True)
+        env.config.PRECISION_PARAM = {}
+        env.config.COMPLIANCE_PARAM = {}
+        measured = np.array([0.05, -0.02, 0.01, 0.0, 0.0, 0.0, 1.0])
+        calls = []
+
+        def read_state():
+            env.currpos = measured.copy()
+            calls.append("state")
+
+        def post(route, payload=None):
+            calls.append(route)
+            return types.SimpleNamespace(raise_for_status=lambda: None)
+
+        env._update_currpos = read_state
+        env._post_debug = post
+        env._send_pos_command = lambda pose, source: calls.append((source, pose.copy()))
+        env.interpolate_move = lambda goal, timeout: calls.append(("move", goal.copy()))
+
+        env.hold_position()
+        self.assertEqual(calls, [])
+        env._fake_env = False  # Real network behaviour is stubbed from here onward.
+        env.hold_position()
+        env.go_to_reset()
+        self.assertEqual(calls[:2], ["hold", "state"])
+        self.assertEqual(calls[2][0], "policy")
+        np.testing.assert_array_equal(calls[2][1], measured)
+        np.testing.assert_array_equal(calls[5][1], [*measured[:2], env.resetpos[2], *measured[3:]])
+
+        calls.clear()
+        env.go_to_reset()
+        self.assertEqual(calls[1][0], "reset")
+
+        calls.clear()
+        env.hold_position()
+        measured[0] = 2.0
+        with self.assertRaisesRegex(RuntimeError, "inside the workspace"):
+            env.go_to_reset()
+        self.assertEqual(calls, ["hold", "state"])
+        self.assertTrue(env._held_for_reset)
+
     def test_applied_action_round_trip_uses_pre_action_tcp_axes_and_mrp(self):
         env = robot_env()
         env.currpos[3:] = Rotation.from_rotvec([0, 0, np.pi / 2]).as_quat()

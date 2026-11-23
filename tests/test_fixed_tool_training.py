@@ -1,8 +1,14 @@
 """固定工具训练链路的离线回归；不导入 JAX、相机或机械臂驱动。"""
 import ast
+from contextlib import redirect_stdout
 import copy
+import io
 import json
+import os
+from queue import Queue
+import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -210,6 +216,62 @@ class FixedToolTrainingTests(unittest.TestCase):
         self.assertEqual(samples[0]["rewards"], 1)
         self.assertTrue(samples[0]["infos"]["succeed"])
         np.testing.assert_allclose(samples[0]["actions"], .1)
+
+    def test_station_evaluation_counts_physical_and_classifier_success_independently(self):
+        callback = None
+        restored_steps = []
+        unsubscribed = []
+
+        def register(handler):
+            nonlocal callback
+            callback = handler
+            return lambda: unsubscribed.append(True)
+
+        class Env:
+            def __init__(self):
+                self.unwrapped = self
+                self.episode = self.steps = self.holds = 0
+
+            def reset(self):
+                self.episode += 1
+                return None, {}
+
+            def step(self, action):
+                self.steps += 1
+                classifier_success = self.episode == 1
+                callback("h" if classifier_success else "f")
+                return None, int(classifier_success), classifier_success, False, {"succeed": classifier_success}
+
+            def hold_position(self):
+                self.holds += 1
+
+        state = types.SimpleNamespace(params={})
+
+        def restore(path, target, step):
+            restored_steps.append(step)
+            return state
+
+        agent = types.SimpleNamespace(state=state, replace=lambda **kwargs: agent, sample_actions=lambda **kwargs: [0])
+        jax = types.SimpleNamespace(random=types.SimpleNamespace(split=lambda rng: (rng, rng)),
+                                   device_put=lambda value: value, device_get=lambda value: value)
+        evaluate = load_definition("examples/train_rlpd.py", "evaluate_policy", dict(
+            FLAGS=types.SimpleNamespace(checkpoint_path="original", eval_checkpoint_step=25000,
+                                        eval_station="station_b", eval_n_trajs=2),
+            checkpoints=types.SimpleNamespace(restore_checkpoint=restore),
+            TERMINAL_KEYBOARD_HUB=types.SimpleNamespace(register=register),
+            Queue=Queue, os=os, sys=sys, time=time, np=np, jax=jax,
+            validate_parameter_shapes=validate_parameter_shapes))
+
+        env = Env()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            evaluate(agent, env, None)
+        self.assertIn("physical_success=False classifier_success=True", output.getvalue())
+        self.assertIn("physical_success=True classifier_success=False", output.getvalue())
+        self.assertEqual(env.steps, 2)
+        self.assertEqual(env.holds, 2)
+        self.assertEqual(restored_steps, [25000])
+        self.assertEqual(unsubscribed, [True])
 
     def test_real_learner_requests_half_human_half_online_batches(self):
         class Buffer:

@@ -11,10 +11,11 @@ export LD_LIBRARY_PATH=/home/serl/miniforge3/envs/hilserl/lib/python3.10/site-pa
 MODE="${MODE:-train}"
 EVAL_CHECKPOINT_STEP="${EVAL_CHECKPOINT_STEP:-25000}"
 EVAL_N_TRAJS="${EVAL_N_TRAJS:-10}"
+CHECKPOINT_PATH="${CHECKPOINT_PATH:-first_run}"
 
 ARGS=(
     --exp_name=ram_insertion \
-    --checkpoint_path=first_run \
+    --checkpoint_path="${CHECKPOINT_PATH}" \
     --actor
 )
 

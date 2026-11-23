@@ -172,7 +172,7 @@ class VisualRewardPipelineTests(unittest.TestCase):
                            n.name in {"main", "_consume_request", "_get_manual_action"}]
             exec(compile(ast.Module(body=definitions, type_ignores=[]), "collector", "exec"), namespace)
             namespace["main"](None)
-            self.assertEqual((env.steps, env.resets, env.holds), (3, 1, 1))
+            self.assertEqual((env.steps, env.resets, env.holds), (3, 1, 2))
             self.assertTrue(env.closed)
             import pickle
             positive = pickle.loads(next(Path(directory).glob("*success*.pkl")).read_bytes())

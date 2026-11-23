@@ -10,7 +10,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import os
 from tqdm import tqdm
 import numpy as np
 import copy
@@ -28,6 +27,7 @@ flags.DEFINE_integer("successes_needed", 20, "Number of successful demos to coll
 flags.DEFINE_boolean("auto", False, "Auto-generate trajectories to target pose.")
 flags.DEFINE_float("auto_speed", 2.0, "Auto mode step size in mm (default 2.0mm per step).")
 flags.DEFINE_boolean("resume", False, "Resume from latest existing demo data.")
+flags.DEFINE_boolean("manual_success_only", False, "Save RAM demonstrations only after human-confirmed insertion.")
 
 from examples.auto_trajectory import auto_move_to_target
 from examples.collection_utils import (
@@ -37,11 +37,16 @@ from examples.collection_utils import (
 
 
 def main(_):
-    if FLAGS.exp_name == "ram_insertion" and FLAGS.auto and os.getenv("RAM_PORT_VISION_CONFIG"):
-        raise ValueError("Use manual demonstrations when RAM port vision is active")
     assert FLAGS.exp_name in CONFIG_MAPPING, 'Experiment folder not found.'
+    if FLAGS.manual_success_only and (FLAGS.auto or FLAGS.exp_name != "ram_insertion"):
+        raise ValueError("--manual_success_only requires ram_insertion and manual control")
     config = CONFIG_MAPPING[FLAGS.exp_name]()
-    env = config.get_environment(fake_env=False, save_video=False, classifier=False)
+    env_kwargs = {"fake_env": False, "save_video": False, "classifier": False}
+    if FLAGS.manual_success_only:
+        env_kwargs["keyboard_go_to_target"] = False
+    env = config.get_environment(**env_kwargs)
+    if FLAGS.manual_success_only:
+        env.unwrapped.use_pose_reward = False
     restart_requested = False
     success_requested = False
     failure_requested = False
@@ -57,7 +62,8 @@ def main(_):
             failure_requested = True
 
     unsubscribe_restart = TERMINAL_KEYBOARD_HUB.register(_on_key)
-    print("Hotkeys: 'f' = success, 'h' = failure, 'r' = discard & reset; 'g' = go to target")
+    print("Hotkeys: 'f' = success, 'h' = failure, 'r' = discard & reset" +
+          ("" if FLAGS.manual_success_only else "; 'g' = go to target"))
 
     transitions = []
     success_count = 0
@@ -82,6 +88,8 @@ def main(_):
 
         if success_count >= success_needed:
             return
+        if FLAGS.manual_success_only:
+            env.unwrapped.hold_position()
         obs, info = env.reset()
         print("Reset done")
 

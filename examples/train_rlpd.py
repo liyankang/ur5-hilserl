@@ -7,6 +7,7 @@
 # print("Debugger Attached")
 import sys
 from pathlib import Path
+from queue import Queue
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -68,6 +69,8 @@ flags.DEFINE_multi_string("demo_path", None, "Path to the demo data.")
 flags.DEFINE_string("checkpoint_path", None, "Path to save checkpoints.")
 flags.DEFINE_integer("eval_checkpoint_step", 0, "Step to evaluate the checkpoint.")
 flags.DEFINE_integer("eval_n_trajs", 0, "Number of trajectories to evaluate.")
+flags.DEFINE_string("eval_station", None, "Label a RAM evaluation station and record actual insertion with F/H.")
+flags.DEFINE_string("train_station", None, "Train the RAM actor at this manually placed station.")
 flags.DEFINE_boolean("save_video", False, "Save video.")
 
 flags.DEFINE_boolean(
@@ -87,56 +90,88 @@ def print_green(x):
 ##############################################################################
 
 
-def actor(agent, data_store, intvn_data_store, env, sampling_rng):
-    """
-    This is the actor loop, which runs when "--actor" is set to True.
-    """
-    if FLAGS.eval_checkpoint_step:
-        if FLAGS.checkpoint_path is None:
-            raise ValueError("--checkpoint_path is required when --eval_checkpoint_step is set.")
-        if not os.path.exists(os.path.join(FLAGS.checkpoint_path, f"checkpoint_{FLAGS.eval_checkpoint_step}")):
-            raise FileNotFoundError(f"Requested evaluation checkpoint_{FLAGS.eval_checkpoint_step} does not exist; refusing to evaluate an initialized policy.")
-        success_counter = 0
-        time_list = []
+def evaluate_policy(agent, env, sampling_rng):
+    ckpt = checkpoints.restore_checkpoint(
+        os.path.abspath(FLAGS.checkpoint_path), agent.state, step=FLAGS.eval_checkpoint_step,
+    )
+    validate_parameter_shapes(agent.state.params, ckpt.params, "evaluation checkpoint")
+    agent = agent.replace(state=ckpt)
+    station = FLAGS.eval_station
+    labels = Queue() if station else None
+    classifier_successes = physical_successes = 0
+    time_list = []
+    trial_active = False
 
-        ckpt = checkpoints.restore_checkpoint(
-            os.path.abspath(FLAGS.checkpoint_path),
-            agent.state,
-            step=FLAGS.eval_checkpoint_step,
-        )
-        validate_parameter_shapes(agent.state.params, ckpt.params, "evaluation checkpoint")
-        agent = agent.replace(state=ckpt)
+    def on_key(key):
+        key = key.lower()
+        if key in ("f", "h"):
+            labels.put_nowait(key)
 
+    unsubscribe = TERMINAL_KEYBOARD_HUB.register(on_key) if labels is not None else None
+    try:
+        if labels is not None:
+            # A previous evaluation process may have left the controller held.
+            env.unwrapped.hold_position()
         for episode in range(FLAGS.eval_n_trajs):
+            trial_active = labels is not None
             obs, _ = env.reset()
+            if labels is not None:
+                # Ignore labels entered while the robot was resetting.
+                while not labels.empty():
+                    labels.get_nowait()
+                print(f"[{station}] Trial {episode + 1}/{FLAGS.eval_n_trajs}. F = fully inserted, H = not inserted.", flush=True)
             done = False
-            start_time = time.time()
-            while not done:
+            info = {}
+            start_time = time.monotonic()
+            while not done and (labels is None or labels.empty()):
                 sampling_rng, key = jax.random.split(sampling_rng)
                 actions = agent.sample_actions(
-                    observations=jax.device_put(obs),
-                    argmax=False,
-                    seed=key
+                    observations=jax.device_put(obs), argmax=False, seed=key,
                 )
                 actions = np.asarray(jax.device_get(actions))
-
-                next_obs, reward, done, truncated, info = env.step(actions)
-                obs = next_obs
+                if labels is not None and not labels.empty():
+                    break
+                obs, _, done, truncated, info = env.step(actions)
                 done = bool(done or truncated)
+                if labels is not None and info.get("safety_stop", False):
+                    raise RuntimeError("Robot safety stop during evaluation")
 
-                if done:
-                    if reward:
-                        dt = time.time() - start_time
-                        time_list.append(dt)
-                        print(f'Delta time: {dt}')
+            classifier_success = bool(info.get("succeed", False))
+            classifier_successes += int(classifier_success)
+            if classifier_success:
+                time_list.append(time.monotonic() - start_time)
+            if labels is not None:
+                # The classifier wrapper already holds after a positive prediction.
+                if not classifier_success:
+                    env.unwrapped.hold_position()
+                trial_active = False
+                if labels.empty():
+                    print("Motion held. Press F for actual full insertion or H for failure.", flush=True)
+                physical_success = labels.get() == "f"
+                physical_successes += int(physical_success)
+                print(f"[{station}] physical_success={physical_success} classifier_success={classifier_success}", flush=True)
+            else:
+                print(f"Classifier success counter / episode: {classifier_successes}/{episode + 1}")
+    finally:
+        if unsubscribe is not None:
+            unsubscribe()
+        if trial_active:
+            try:
+                env.unwrapped.hold_position()
+            except Exception as exc:
+                print(f"Robot did not confirm hold: {exc}", file=sys.stderr, flush=True)
 
-                    # success_counter += reward
-                    success_counter += int(info['succeed'])
-                    print(f"Reward: {reward}    Success counter / episode: {success_counter}/{episode + 1}")
+    if station:
+        print(f"[{station}] physical success: {physical_successes}/{FLAGS.eval_n_trajs}")
+    print(f"classifier success rate: {classifier_successes / FLAGS.eval_n_trajs}")
+    print(f"average classifier success time: {np.mean(time_list) if time_list else 'n/a'}")
 
-        print(f"success rate: {success_counter / FLAGS.eval_n_trajs}")
-        print(f"average time: {np.mean(time_list)}")
-        return  # after done eval, return and exit
+
+def actor(agent, data_store, intvn_data_store, env, sampling_rng):
+    """Run either frozen evaluation or online interaction with the learner."""
+    if FLAGS.eval_checkpoint_step:
+        evaluate_policy(agent, env, sampling_rng)
+        return
     if FLAGS.checkpoint_path is None:
         start_step = 0
     else:
@@ -181,6 +216,9 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
     transitions = []
     demo_transitions = []
 
+    if FLAGS.train_station:
+        print(f"Training at station {FLAGS.train_station}", flush=True)
+        env.unwrapped.hold_position()
     obs, _ = env.reset()
     done = False
 
@@ -221,7 +259,8 @@ def actor(agent, data_store, intvn_data_store, env, sampling_rng):
             # Manual success override: press 'f' to mark current step as success
             if manual_success:
                 info["manual_success"] = True
-                reward, done, truncated, info = apply_manual_success(reward, done, truncated, info, env=env)
+                if not reward:
+                    reward, done, truncated, info = apply_manual_success(reward, done, truncated, info, env=env)
                 manual_success = not info.get("safety_stop", False)
                 TERMINAL_KEYBOARD_HUB.suspend()
                 print(f"[Actor] Manual success at step {step}!")
@@ -459,6 +498,21 @@ def main(_):
     if FLAGS.checkpoint_path is None and getattr(config, "checkpoint_path", None):
         FLAGS.checkpoint_path = config.checkpoint_path
 
+    if FLAGS.eval_station and (FLAGS.exp_name != "ram_insertion" or not FLAGS.eval_checkpoint_step):
+        raise ValueError("--eval_station requires a ram_insertion evaluation checkpoint")
+    if FLAGS.eval_station and not sys.stdin.isatty():
+        raise ValueError("--eval_station requires an interactive terminal for F/H labels")
+    if FLAGS.train_station and (FLAGS.exp_name != "ram_insertion" or not FLAGS.actor or FLAGS.learner or FLAGS.eval_checkpoint_step):
+        raise ValueError("--train_station requires the ram_insertion training actor")
+    if FLAGS.eval_checkpoint_step:
+        if not FLAGS.actor or FLAGS.learner or FLAGS.eval_checkpoint_step < 0 or FLAGS.eval_n_trajs <= 0:
+            raise ValueError("Evaluation requires --actor, a positive checkpoint step and --eval_n_trajs > 0")
+        if FLAGS.checkpoint_path is None:
+            raise ValueError("--checkpoint_path is required for evaluation")
+        checkpoint = Path(FLAGS.checkpoint_path) / f"checkpoint_{FLAGS.eval_checkpoint_step}"
+        if not checkpoint.exists():
+            raise FileNotFoundError(f"Requested evaluation checkpoint does not exist: {checkpoint}")
+
     assert config.batch_size % num_devices == 0
     # seed
     rng = jax.random.PRNGKey(FLAGS.seed)
@@ -469,9 +523,16 @@ def main(_):
         "save_video": FLAGS.save_video,
         "classifier": True,
     }
+    if FLAGS.eval_station:
+        env_kwargs["keyboard_intervention"] = False
+    if FLAGS.train_station:
+        env_kwargs["keyboard_go_to_target"] = False
     if "render_mode" in inspect.signature(config.get_environment).parameters and not FLAGS.actor:
         env_kwargs["render_mode"] = "rgb_array"
     env = config.get_environment(**env_kwargs)
+    if FLAGS.eval_station and not callable(getattr(env, "reward_classifier_func", None)):
+        env.close()
+        raise ValueError("Station evaluation requires the visual reward classifier")
     env = RecordEpisodeStatistics(env)
     sample_action = validate_action_space(config, env)
     # 网络输出维数来自实际动作空间；JSON 的 action_dim 必须与其一致。
@@ -524,7 +585,7 @@ def main(_):
     )
 
     latest_ckpt = None
-    if FLAGS.checkpoint_path is not None and os.path.exists(FLAGS.checkpoint_path):
+    if not FLAGS.eval_checkpoint_step and FLAGS.checkpoint_path is not None and os.path.exists(FLAGS.checkpoint_path):
         latest_ckpt = checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path))
     if latest_ckpt is not None:
         TERMINAL_KEYBOARD_HUB.suspend()
@@ -639,7 +700,10 @@ def main(_):
         try:
             actor(agent, data_store, intvn_data_store, env, sampling_rng)
         finally:
-            if getattr(env.unwrapped, "port_approach", None) is not None:
+            try:
+                if FLAGS.train_station:
+                    env.unwrapped.hold_position()
+            finally:
                 env.close()
 
     else:

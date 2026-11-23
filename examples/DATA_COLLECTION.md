@@ -1,6 +1,7 @@
 # 数据采集约定
 
 - `record_demos.py` 保存成功轨迹；F 标记成功，H 标记失败，R 丢弃当前轨迹并复位。G 保留为环境的移动到目标快捷键，`;` 切换键盘接管。
+- 采集换位示范时使用 `--manual_success_only`，完全插入后按 F。这个模式锁定人工成功标注，并停用 G 和自动示范。
 - `record_success_fail.py` 只保存人工标注的样本。空格/F 标记已插入，H 标记未完全插入。标记成功后结束本回合，继续采集时执行复位。此脚本的 `--auto` 会报错。
 - `--successes_needed` 是包含续采数据在内的目标总数。`--resume` 按修改时间选择最新文件，并原子更新原文件，避免累计快照被训练程序重复加载。
 - `record_demos.py` 的 `--auto_speed` 以毫米指定每个策略步的最大平移请求，实际运动受动作、插值和工作空间限制。
@@ -26,4 +27,26 @@ RAM 在线训练使用分类器奖励，成功概率阈值为 0.95。分类器�
 
 RAM 分类器模型保存在 `classifier_ckpt/ram_insertion/`。分类器训练按完整回合或采集批次划分训练集和验证集。
 
-泛化评估应预留未参与训练的位置和光照条件。初始位姿随机化和改变母口实际位置属于不同实验。
+## 母口换位示范与微调
+
+1. 先用已有策略在原工位与已确认可达的新工位做评估。保持母口和 U 盘朝向，沿用同一复位流程，通过 `--eval_station` 记录工位名。每批结束且机械臂退出停稳后再换工位。 [评估命令](../readme.md)
+2. 按工位比较实际完全插入和分类器判定。实际插入成功却漏判，或尚未完全插入就判成功时，使用 `record_success_fail.py` 补录相应的正样本或难负样本。分类器样本应覆盖对准未插入、半插入与完全插入。
+3. 策略在新工位反复对不准时，对该工位采集人工成功轨迹。沿用 [键盘接管](../代码阅读指南.md#3-跟踪一条动作和一帧观测)，完全插入时按 F 保存。
+
+   ```bash
+   python examples/record_demos.py --exp_name=ram_insertion --manual_success_only
+   ```
+
+4. 将选定的示范文件放在独立目录。准备一个新的微调目录，把选定的旧 `checkpoint_<步数>` 复制进去。Learner 与训练 Actor 指向同一个微调目录，先启动 Learner，再启动 Actor。
+
+   ```bash
+   DEMO_DIR="$PWD/demo_data_multistation" CHECKPOINT_PATH="$PWD/ram_multistation_run" \
+     bash examples/experiments/ram_insertion/run_learner.sh
+   ```
+
+   ```bash
+   MODE=train bash examples/experiments/ram_insertion/run_actor.sh \
+     --checkpoint_path="$PWD/ram_multistation_run" --train_station=station_b
+   ```
+
+微调后用新的检查点重复评估。要测未见母口位置的泛化，预留完整工位作为测试集。起点随机化和母口换位分别统计。

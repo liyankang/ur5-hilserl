@@ -601,12 +601,13 @@ class KeyBoardIntervention(gym.ActionWrapper):
     Keyboard-based intervention for demo collection without a SpaceMouse.
     """
 
-    def __init__(self, env, action_indices=None, action_magnitude=1.0):
+    def __init__(self, env, action_indices=None, action_magnitude=1.0, *, allow_go_to_target=True):
         super().__init__(env)
 
         self.gripper_enabled = self.action_space.shape != (6,)
         self.action_indices = action_indices
         self.action_magnitude = action_magnitude
+        self.allow_go_to_target = allow_go_to_target
         self.left, self.right = False, False
         self.intervened = False
         self.gripper_state = "close"
@@ -638,7 +639,8 @@ class KeyBoardIntervention(gym.ActionWrapper):
         print(
             "Keyboard intervention enabled (OFF by default): "
             "press W/S/A/D/J/K for XYZ movement, Z/X/V/B/N/M for RX/RY/RZ rotation, "
-            "; to toggle intervention, G for go-to-target, F to mark success"
+            "; to toggle intervention, F to mark success"
+            + (", G for go-to-target" if allow_go_to_target else "")
             + (", L to toggle gripper" if self.gripper_enabled else "")
         )
 
@@ -658,7 +660,7 @@ class KeyBoardIntervention(gym.ActionWrapper):
                 self._last_toggle_time = now
                 self._go_to_target = False  # cancel go-to-target on toggle
                 print(f"Keyboard intervention toggled: {self.intervened}")
-        elif key_str == "g":
+        elif key_str == "g" and self.allow_go_to_target:
             self._go_to_target = not self._go_to_target
             print(f"Go-to-target: {self._go_to_target}")
         elif key_str == "f":

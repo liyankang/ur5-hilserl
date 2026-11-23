@@ -1,7 +1,5 @@
 import copy
 import logging
-import os
-import sys
 import time
 from scipy.spatial.transform import Rotation as R
 import numpy as np
@@ -20,23 +18,10 @@ def _fmt_pose(label, value):
 
 class RAMEnv(urEnv):
     def __init__(self, **kwargs):
-        self.port_approach = None
-        vision_path = None if kwargs.get("fake_env", False) else os.getenv("RAM_PORT_VISION_CONFIG")
-        if vision_path:
-            if not sys.stdin.isatty():
-                raise ValueError("RAM port vision needs an interactive terminal for the fixture-ready key U")
-            from .port_approach import PortApproach
-            from .port_vision import PortVision
-
-            vision = PortVision.load(vision_path)
+        self._fake_env = kwargs.get("fake_env", False)
+        self._held_for_reset = False
         super().__init__(**kwargs)
         self.should_regrasp = False
-        if vision_path:
-            try:
-                self.port_approach = PortApproach(self, vision)
-            except Exception:
-                super().close()
-                raise
         self._unsubscribe_regrasp = TERMINAL_KEYBOARD_HUB.register(self._on_key)
 
         LOGGER.info("RAM demo hotkey enabled: press r to regrasp")
@@ -55,23 +40,14 @@ class RAMEnv(urEnv):
             raise
 
     def _on_key(self, key_char: str):
-        if self.port_approach is not None:
-            self.port_approach.on_key(key_char)
         if key_char.lower() == "r":
             self.should_regrasp = True
 
-    def _send_pos_command(self, pos, source="policy"):
-        if self.port_approach is not None:
-            self.port_approach.send_pose(pos, source)
-            return
-        super()._send_pos_command(pos, source=source)
-
-    def _update_currpos(self):
-        if self.port_approach is not None:
-            state, _ = self.port_approach.read_state()
-            self._parse_state_response(state)
-            return
-        super()._update_currpos()
+    def hold_position(self):
+        """Stop the robot controller's active motion until the next reset."""
+        if not self._fake_env:
+            self._post_debug("hold").raise_for_status()
+            self._held_for_reset = True
 
     def go_to_reset(self, joint_reset=False):
         """
@@ -82,7 +58,20 @@ class RAMEnv(urEnv):
         self._update_currpos()
         LOGGER.info("[RAMEnv] go_to_reset start %s", _fmt_pose("currpos", self.currpos))
 
-        self._send_pos_command(self.currpos, source="reset")
+        # /hold only resumes on a fresh policy pose. Resume at the measured TCP
+        # before sending the original retreat and reset targets.
+        if self._held_for_reset:
+            xyz = self.currpos[:3]
+            if (
+                not np.all(np.isfinite(self.currpos))
+                or np.any(xyz < self.xyz_bounding_box.low - 1e-6)
+                or np.any(xyz > self.xyz_bounding_box.high + 1e-6)
+            ):
+                raise RuntimeError("Current TCP must be valid and inside the workspace before resuming RAM reset")
+            self._send_pos_command(self.currpos, source="policy")
+            self._held_for_reset = False
+        else:
+            self._send_pos_command(self.currpos, source="reset")
         time.sleep(0.3)
         self._post_debug("update_param", payload=self.config.PRECISION_PARAM)
 
@@ -176,18 +165,6 @@ class RAMEnv(urEnv):
         if self.save_video:
             self.save_video_recording()
 
-        if self.port_approach is not None:
-            if joint_reset:
-                raise ValueError("RAM port vision uses Cartesian retreat and approach")
-            info = self.port_approach.align()
-            self._post_debug("update_param", payload=self.config.COMPLIANCE_PARAM).raise_for_status()
-            self.should_regrasp = False
-            self.curr_path_length = 0
-            self.terminate = False
-            self._update_currpos()
-            return self._get_obs(), info
-
-        # if True:
         if self.should_regrasp:
             self.regrasp()
             self.should_regrasp = False
@@ -208,8 +185,4 @@ class RAMEnv(urEnv):
         if hasattr(self, "_unsubscribe_regrasp") and self._unsubscribe_regrasp is not None:
             self._unsubscribe_regrasp()
             self._unsubscribe_regrasp = None
-        try:
-            if self.port_approach is not None:
-                self.port_approach.hold()
-        finally:
-            super().close()
+        super().close()

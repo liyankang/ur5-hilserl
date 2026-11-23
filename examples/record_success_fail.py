@@ -105,6 +105,9 @@ def main(_):
         keyboard = getattr(keyboard, "env", None)
     pbar = tqdm(total=FLAGS.successes_needed, initial=len(successes))
     try:
+        hold = getattr(env.unwrapped, "hold_position", None)
+        if callable(hold):
+            hold()
         obs, _ = env.reset()
         episode_id = str(uuid.uuid4())
         _consume_request()
@@ -142,13 +145,8 @@ def main(_):
                 pbar.set_postfix(negative=len(failures), step_hz=f"{1 / max(elapsed, 1e-6):.1f}")
                 last_report = time.monotonic()
             if requested in ("success", "reset") or terminated or truncated:
-                if requested == "success":
-                    hold = getattr(env.unwrapped, "hold_position", None)
-                    port_approach = getattr(env.unwrapped, "port_approach", None)
-                    if callable(hold):
-                        hold()
-                    elif port_approach is not None:
-                        port_approach.hold()
+                if requested == "success" and callable(hold):
+                    hold()
                 # 成功标注后先结束此回合，不再生成下一步向端口推进的动作。
                 if len(successes) >= FLAGS.successes_needed:
                     break
